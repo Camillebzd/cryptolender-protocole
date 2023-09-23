@@ -14,7 +14,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 //    to renter and the ERC20 token amount from the renter to this contract as collateral (if one of the transfere failed
 //    for any raisons, the UI will explain why but nothing will be transfered).
 // pro rated system ?
-contract Escrow is Ownable, IERC721Receiver {        
+contract Lender is Ownable, IERC721Receiver {        
     /* ********** */
     /* DATA TYPES */
     /* ********** */
@@ -25,7 +25,7 @@ contract Escrow is Ownable, IERC721Receiver {
         address assetContract;
         uint256 tokenId;
         uint256 collateralAmount;
-        address ERC20DenominationUsed;
+        address erc20DenominationUsed;
         uint128 startTimestamp;
         uint128 endTimestamp;
         uint256 pricePerDay;
@@ -38,7 +38,7 @@ contract Escrow is Ownable, IERC721Receiver {
         address assetContract;
         uint256 tokenId;
         uint256 collateralAmount;
-        address ERC20DenominationUsed;
+        address erc20DenominationUsed;
         uint128 startTimestamp;
         uint128 endTimestamp;
         uint256 pricePerDay;
@@ -48,10 +48,19 @@ contract Escrow is Ownable, IERC721Receiver {
 
     enum ProposalStatus {UNSET, PENDING, ACCEPTED, REFUSED}
 
+    struct ProposalParameters {
+        address erc20DenominationUsed;
+        uint128 startTimestampProposal;
+        uint128 endTimestampProposal;
+        uint128 startTimestampRental;
+        uint128 endTimestampRental;
+        bool isProRated;
+    }
+
     struct Proposal {
         uint256 listingId;
         address proposalCreator;
-        address ERC20DenominationUsed;
+        address erc20DenominationUsed;
         uint128 startTimestampProposal;
         uint128 endTimestampProposal;
         uint128 startTimestampRental;
@@ -73,6 +82,15 @@ contract Escrow is Ownable, IERC721Receiver {
         bool isProRated;
     }
 
+    /* ********* */
+    /* MODIFIERS */
+    /* ********* */
+
+    modifier onlyListingOwner(uint256 listingId) {
+        require(listingIdToListing[listingId].listingCreator == msg.sender, "Error: you are not the owner of the listing.");
+        _;
+    }
+
     /* ******* */
     /*  EVENT  */
     /* ******* */
@@ -83,13 +101,13 @@ contract Escrow is Ownable, IERC721Receiver {
         uint256 indexed listingId,
         Listing listing
     );
-    event UpdatedListing(
+    event ListingUpdated(
         address indexed listingCreator,
         address indexed assetContract,
         uint256 indexed listingId,
         Listing listing
     );
-    event CancelledListing(
+    event ListingCancelled(
         address indexed listingCreator,
         uint256 indexed listingId
     );
@@ -126,7 +144,7 @@ contract Escrow is Ownable, IERC721Receiver {
             ERC721(_listingParameters.assetContract).getApproved(_listingParameters.tokenId) == address(this),
             "Escrow: Escrow contract is not approved to transfer this nft"
         );
-        require(address(_listingParameters.ERC20DenominationUsed) != address(0), "Escrow: Invalid erc20 contract address");
+        require(address(_listingParameters.erc20DenominationUsed) != address(0), "Escrow: Invalid erc20 contract address");
         require(
             _listingParameters.endTimestamp > block.timestamp && _listingParameters.endTimestamp > _listingParameters.startTimestamp, 
             "Escrow: Invalid end timestamp"
@@ -134,10 +152,35 @@ contract Escrow is Ownable, IERC721Receiver {
         require(_listingParameters.collateralAmount > 0, "Escrow: Can't accept 0 collateral");
 
         listingIdToListing[totalNumListing] = Listing(totalNumListing, msg.sender, _listingParameters.assetContract, _listingParameters.tokenId,
-            _listingParameters.collateralAmount, _listingParameters.ERC20DenominationUsed, _listingParameters.startTimestamp, _listingParameters.endTimestamp,
+            _listingParameters.collateralAmount, _listingParameters.erc20DenominationUsed, _listingParameters.startTimestamp, _listingParameters.endTimestamp,
             _listingParameters.pricePerDay, _listingParameters.comment, ListingStatus.PENDING
         );
         emit ListingCreated(msg.sender, _listingParameters.assetContract, totalNumListing, listingIdToListing[totalNumListing]);
         totalNumListing++;
+    }
+
+    function updateListing(uint256 _listingId, ListingParameters memory _listingParameters) external onlyListingOwner(_listingId) {
+        require(address(_listingParameters.erc20DenominationUsed) != address(0), "Escrow: Invalid erc20 contract address");
+        require(
+            _listingParameters.endTimestamp > block.timestamp && _listingParameters.endTimestamp > _listingParameters.startTimestamp, 
+            "Escrow: Invalid end timestamp"
+        );
+        require(_listingParameters.collateralAmount > 0, "Escrow: Can't accept 0 collateral");
+        require(listingIdToListing[_listingId].status != ListingStatus.CANCELLED, "Error: listing cancelled");
+
+        listingIdToListing[_listingId].collateralAmount = _listingParameters.collateralAmount;
+        listingIdToListing[_listingId].erc20DenominationUsed = _listingParameters.erc20DenominationUsed;
+        listingIdToListing[_listingId].startTimestamp = _listingParameters.startTimestamp;
+        listingIdToListing[_listingId].endTimestamp = _listingParameters.endTimestamp;
+        listingIdToListing[_listingId].pricePerDay = _listingParameters.pricePerDay;
+        listingIdToListing[_listingId].comment = _listingParameters.comment;
+        emit ListingUpdated(msg.sender, listingIdToListing[totalNumListing].assetContract, _listingId, listingIdToListing[_listingId]);
+    }
+
+    function cancelListing(uint256 _listingId) external onlyListingOwner(_listingId) {
+        require(listingIdToListing[_listingId].status != ListingStatus.CANCELLED, "Error: listing cancelled");
+
+        listingIdToListing[_listingId].status = ListingStatus.CANCELLED;
+        emit ListingCancelled(msg.sender, _listingId);
     }
 }
