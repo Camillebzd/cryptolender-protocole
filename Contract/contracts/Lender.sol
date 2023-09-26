@@ -25,7 +25,7 @@ contract Lender is Ownable, IERC721Receiver {
         address assetContract;
         uint256 tokenId;
         uint256 collateralAmount;
-        address erc20DenominationUsed;
+        address erc20DenominationUsed;//unsued for the moment
         uint128 startTimestamp;
         uint128 endTimestamp;
         uint256 pricePerDay;
@@ -38,7 +38,7 @@ contract Lender is Ownable, IERC721Receiver {
         address assetContract;
         uint256 tokenId;
         uint256 collateralAmount;
-        address erc20DenominationUsed;
+        address erc20DenominationUsed; //unsued for the moment
         uint128 startTimestamp;
         uint128 endTimestamp;
         uint256 pricePerDay;
@@ -49,7 +49,6 @@ contract Lender is Ownable, IERC721Receiver {
     enum ProposalStatus {UNSET, PENDING, ACCEPTED, REFUSED}
 
     struct ProposalParameters {
-        address erc20DenominationUsed;
         uint128 startTimestampProposal;
         uint128 endTimestampProposal;
         uint128 startTimestampRental;
@@ -58,9 +57,9 @@ contract Lender is Ownable, IERC721Receiver {
     }
 
     struct Proposal {
+        uint256 proposalId;
         uint256 listingId;
         address proposalCreator;
-        address erc20DenominationUsed;
         uint128 startTimestampProposal;
         uint128 endTimestampProposal;
         uint128 startTimestampRental;
@@ -70,11 +69,11 @@ contract Lender is Ownable, IERC721Receiver {
     }
 
     struct Rental {
-        uint256 rentalId;                   // Id of the rental
-        address owner;                      // Owner of the NFT
-        address renter;                     // Renter of the NFT
-        address nftAddress;                 // address of the NFT contract
-        uint256 nftId;                      // id of the NFT
+        uint256 rentalId;
+        address owner;
+        address renter;
+        address nftAddress;
+        uint256 nftId;
         uint256 principalCollateralAmount;
         uint256 pricePerDay;
         uint128 startingDate;
@@ -87,7 +86,7 @@ contract Lender is Ownable, IERC721Receiver {
     /* ********* */
 
     modifier onlyListingOwner(uint256 listingId) {
-        require(listingIdToListing[listingId].listingCreator == msg.sender, "Error: you are not the owner of the listing.");
+        require(listingIdToListing[listingId].listingCreator == msg.sender, "Error: you are not the owner of the listing");
         _;
     }
 
@@ -112,6 +111,24 @@ contract Lender is Ownable, IERC721Receiver {
         uint256 indexed listingId
     );
 
+    event ProposalCreated(
+        address indexed proposalCreator,
+        uint256 indexed proposalId,
+        uint256 indexed listingId,
+        Proposal proposal
+    );
+    event ProposalUpdated(
+        address indexed proposalCreator,
+        uint256 indexed proposalId,
+        uint256 indexed listingId,
+        Proposal proposal
+    );
+    event ProposalCancelled(
+        address indexed proposalCreator,
+        uint256 indexed proposalId
+    );
+
+
     event RentalCreated();
     event RentalReturned();
     event RentalLiquidated();
@@ -120,9 +137,17 @@ contract Lender is Ownable, IERC721Receiver {
     /* STORAGE */
     /* ******* */
 
-    uint256 public totalNumListing = 0;
+    uint256 public totalNumListing = 0; // used as counter
 
-    mapping(uint256 => Listing) listingIdToListing;
+    mapping(uint256 => Listing) public listingIdToListing;
+
+    mapping(address => mapping(uint256 => bool)) public isTokenListed; // first key is contract address and second is token id
+
+    uint256 public totalNumProposal = 0; // used as counter
+
+    mapping(uint256 => Proposal) public proposalIdToProposal;
+
+    mapping (uint256 => uint256[20]) public listingIdToProposalsId; // usefull ?
 
     /* *********** */
     /* CONSTRUCTOR */
@@ -139,34 +164,37 @@ contract Lender is Ownable, IERC721Receiver {
     }
 
     function createListing(ListingParameters memory _listingParameters) external {
-        require(_listingParameters.assetContract != address(0), "Escrow: Invalid nft contract address");
+        require(isTokenListed[_listingParameters.assetContract][_listingParameters.tokenId] == false, "Can not create 2 listing of same NFT");
+        require(_listingParameters.assetContract != address(0), "Invalid nft contract address");
         require(
-            ERC721(_listingParameters.assetContract).getApproved(_listingParameters.tokenId) == address(this),
-            "Escrow: Escrow contract is not approved to transfer this nft"
+            ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, address(this)) == true,
+            "Escrow contract is not approved to transfer this nft"
         );
-        require(address(_listingParameters.erc20DenominationUsed) != address(0), "Escrow: Invalid erc20 contract address");
+        require(address(_listingParameters.erc20DenominationUsed) != address(0), "Invalid erc20 contract address");
         require(
             _listingParameters.endTimestamp > block.timestamp && _listingParameters.endTimestamp > _listingParameters.startTimestamp, 
-            "Escrow: Invalid end timestamp"
+            "Invalid end timestamp"
         );
-        require(_listingParameters.collateralAmount > 0, "Escrow: Can't accept 0 collateral");
+        require(_listingParameters.collateralAmount > 0, "Can't accept 0 collateral");
+        // check if tokenId + addressContract already exist to not replicate listing
 
         listingIdToListing[totalNumListing] = Listing(totalNumListing, msg.sender, _listingParameters.assetContract, _listingParameters.tokenId,
             _listingParameters.collateralAmount, _listingParameters.erc20DenominationUsed, _listingParameters.startTimestamp, _listingParameters.endTimestamp,
             _listingParameters.pricePerDay, _listingParameters.comment, ListingStatus.PENDING
         );
         emit ListingCreated(msg.sender, _listingParameters.assetContract, totalNumListing, listingIdToListing[totalNumListing]);
+        isTokenListed[_listingParameters.assetContract][_listingParameters.tokenId] = true;
         totalNumListing++;
     }
 
     function updateListing(uint256 _listingId, ListingParameters memory _listingParameters) external onlyListingOwner(_listingId) {
-        require(address(_listingParameters.erc20DenominationUsed) != address(0), "Escrow: Invalid erc20 contract address");
+        require(listingIdToListing[_listingId].status == ListingStatus.PENDING, "Listing is invalid");
+        require(address(_listingParameters.erc20DenominationUsed) != address(0), "Invalid erc20 contract address");
         require(
             _listingParameters.endTimestamp > block.timestamp && _listingParameters.endTimestamp > _listingParameters.startTimestamp, 
-            "Escrow: Invalid end timestamp"
+            "Invalid end timestamp"
         );
-        require(_listingParameters.collateralAmount > 0, "Escrow: Can't accept 0 collateral");
-        require(listingIdToListing[_listingId].status != ListingStatus.CANCELLED, "Error: listing cancelled");
+        require(_listingParameters.collateralAmount > 0, "Can't accept 0 collateral");
 
         listingIdToListing[_listingId].collateralAmount = _listingParameters.collateralAmount;
         listingIdToListing[_listingId].erc20DenominationUsed = _listingParameters.erc20DenominationUsed;
@@ -178,9 +206,29 @@ contract Lender is Ownable, IERC721Receiver {
     }
 
     function cancelListing(uint256 _listingId) external onlyListingOwner(_listingId) {
-        require(listingIdToListing[_listingId].status != ListingStatus.CANCELLED, "Error: listing cancelled");
+        require(listingIdToListing[_listingId].status == ListingStatus.PENDING, "Listing is invalid");
 
         listingIdToListing[_listingId].status = ListingStatus.CANCELLED;
         emit ListingCancelled(msg.sender, _listingId);
+        isTokenListed[listingIdToListing[_listingId].assetContract][listingIdToListing[_listingId].tokenId] = false;
+    }
+
+    function createProposal(uint256 _listingId, ProposalParameters memory _proposalParameters) external {
+        require(isTokenListed[listingIdToListing[_listingId].assetContract][listingIdToListing[_listingId].tokenId], "Listing doesn't exist");
+        require(
+            _proposalParameters.startTimestampProposal < _proposalParameters.endTimestampProposal && 
+            _proposalParameters.startTimestampRental < _proposalParameters.endTimestampRental &&
+            _proposalParameters.startTimestampProposal <= _proposalParameters.startTimestampRental &&
+            listingIdToListing[_listingId].startTimestamp <= _proposalParameters.startTimestampRental &&
+            listingIdToListing[_listingId].startTimestamp <= _proposalParameters.startTimestampProposal &&
+            _proposalParameters.startTimestampProposal < listingIdToListing[_listingId].endTimestamp,
+            "Timestamp error"
+        );
+        proposalIdToProposal[totalNumProposal] = Proposal(totalNumProposal, _listingId, msg.sender, _proposalParameters.startTimestampProposal, 
+            _proposalParameters.endTimestampProposal, _proposalParameters.startTimestampRental, _proposalParameters.endTimestampRental, _proposalParameters.isProRated,
+            ProposalStatus.PENDING
+        );
+        emit ProposalCreated(msg.sender, totalNumProposal, _listingId, proposalIdToProposal[totalNumProposal]);
+        totalNumProposal++;
     }
 }
