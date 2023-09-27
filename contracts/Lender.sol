@@ -3,6 +3,7 @@ pragma solidity ^0.8.9;
 
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 // Steps to use:
@@ -46,7 +47,7 @@ contract Lender is Ownable, IERC721Receiver {
         ListingStatus status;
     }
 
-    enum ProposalStatus {UNSET, PENDING, ACCEPTED, REFUSED}
+    enum ProposalStatus {UNSET, PENDING, ACCEPTED, REFUSED, CANCELLED}
 
     struct ProposalParameters {
         uint128 startTimestampProposal;
@@ -89,6 +90,12 @@ contract Lender is Ownable, IERC721Receiver {
         require(listingIdToListing[listingId].listingCreator == msg.sender, "Error: you are not the owner of the listing");
         _;
     }
+
+    modifier onlyProposalOwner(uint256 proposalId) {
+        require(proposalIdToProposal[proposalId].proposalCreator == msg.sender, "Error: you are not the owner of the proposal");
+        _;
+    }
+
 
     /* ******* */
     /*  EVENT  */
@@ -137,6 +144,12 @@ contract Lender is Ownable, IERC721Receiver {
     /* STORAGE */
     /* ******* */
 
+    // Accepted smart contract address for collateral purpose
+    // Matic address ethereum: 0x7D1AfA7B718fb893dB30A3aBc0Cfc608AaCfeBB0
+    // Matic address polygon: 0x0000000000000000000000000000000000001010 
+    // Matic address mumbai: 0x0000000000000000000000000000000000001010
+    address public erc20DenominationUsed;
+
     uint256 public totalNumListing = 0; // used as counter
 
     mapping(uint256 => Listing) public listingIdToListing;
@@ -153,7 +166,9 @@ contract Lender is Ownable, IERC721Receiver {
     /* CONSTRUCTOR */
     /* *********** */
 
-    constructor() {}
+    constructor(address _erc20DenominationUsed) {
+        erc20DenominationUsed = _erc20DenominationUsed;
+    }
 
     /* ********* */
     /* FUNCTIONS */
@@ -215,6 +230,11 @@ contract Lender is Ownable, IERC721Receiver {
 
     function createProposal(uint256 _listingId, ProposalParameters memory _proposalParameters) external {
         require(isTokenListed[listingIdToListing[_listingId].assetContract][listingIdToListing[_listingId].tokenId], "Listing doesn't exist");
+        // check if allowed to move collateral
+        require(
+            ERC20(erc20DenominationUsed).allowance(msg.sender, address(this)) >= listingIdToListing[_listingId].collateralAmount, 
+            "Escrow contract is not approved to transfer collateral"
+        );
         require(
             _proposalParameters.startTimestampProposal < _proposalParameters.endTimestampProposal && 
             _proposalParameters.startTimestampRental < _proposalParameters.endTimestampRental &&
@@ -230,5 +250,39 @@ contract Lender is Ownable, IERC721Receiver {
         );
         emit ProposalCreated(msg.sender, totalNumProposal, _listingId, proposalIdToProposal[totalNumProposal]);
         totalNumProposal++;
+    }
+
+    function updateProposal(uint256 _proposalId, ProposalParameters memory _proposalParameters) external onlyProposalOwner(_proposalId) {
+        require(proposalIdToProposal[_proposalId].status == ProposalStatus.PENDING, "Proposal invalid");
+        require(
+            _proposalParameters.startTimestampProposal < _proposalParameters.endTimestampProposal && 
+            _proposalParameters.startTimestampRental < _proposalParameters.endTimestampRental &&
+            _proposalParameters.startTimestampProposal <= _proposalParameters.startTimestampRental &&
+            listingIdToListing[proposalIdToProposal[_proposalId].listingId].startTimestamp <= _proposalParameters.startTimestampRental &&
+            listingIdToListing[proposalIdToProposal[_proposalId].listingId].startTimestamp <= _proposalParameters.startTimestampProposal &&
+            _proposalParameters.startTimestampProposal < listingIdToListing[proposalIdToProposal[_proposalId].listingId].endTimestamp,
+            "Timestamp error"
+        );
+        proposalIdToProposal[_proposalId].startTimestampProposal = _proposalParameters.startTimestampProposal;
+        proposalIdToProposal[_proposalId].endTimestampProposal = _proposalParameters.endTimestampProposal;
+        proposalIdToProposal[_proposalId].startTimestampRental = _proposalParameters.startTimestampRental;
+        proposalIdToProposal[_proposalId].endTimestampRental = _proposalParameters.endTimestampRental;
+        proposalIdToProposal[_proposalId].isProRated = _proposalParameters.isProRated;
+        emit ProposalUpdated(msg.sender, _proposalId, proposalIdToProposal[_proposalId].listingId, proposalIdToProposal[_proposalId]);
+    }
+
+    function cancelProposal(uint256 _proposalId) external onlyProposalOwner(_proposalId) {
+        require(proposalIdToProposal[_proposalId].status == ProposalStatus.PENDING, "Proposal invalid");
+
+        proposalIdToProposal[_proposalId].status = ProposalStatus.CANCELLED;
+        emit ProposalCancelled(msg.sender, _proposalId);
+    }
+
+    function acceptProposal(uint256 _proposalId) external onlyListingOwner(proposalIdToProposal[_proposalId].listingId) {
+        // check if listing and proposal are valid
+        // check if timestamps are expired
+        // check if allowed to transfer nft
+        // check if allowed to transfer founds
+        // create rental
     }
 }
