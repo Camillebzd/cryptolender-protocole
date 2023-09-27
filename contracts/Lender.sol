@@ -14,7 +14,10 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 // 5. The lender accept one the proposal and create the Rental (respecting the timer in the proposal), the contract will transfere the nft from lender 
 //    to renter and the ERC20 token amount from the renter to this contract as collateral (if one of the transfere failed
 //    for any raisons, the UI will explain why but nothing will be transfered).
-// pro rated system ?
+// -- Some times after 
+// 6. 1) the renter doesn't come, the owner can liquidate his rental and get back the collateral minus the commission of the contract
+// 7. 2) the renter refund the rental by sending back the nft to the contract after approved it and he will receive back the collateral minus the 
+//       price of rent + the commission contract
 contract Lender is Ownable, IERC721Receiver {        
     /* ********** */
     /* DATA TYPES */
@@ -69,17 +72,20 @@ contract Lender is Ownable, IERC721Receiver {
         ProposalStatus status;
     }
 
+    enum RentalStatus {UNSET, ACTIVE, EXPIRED, REFUND, LIQUIDATED}
+
     struct Rental {
         uint256 rentalId;
         address owner;
         address renter;
-        address nftAddress;
-        uint256 nftId;
-        uint256 principalCollateralAmount;
+        address assetContract;
+        uint256 tokenId;
+        uint256 collateralAmount;
         uint256 pricePerDay;
         uint128 startingDate;
         uint128 endingDate;
         bool isProRated;
+        RentalStatus status;
     }
 
     /* ********* */
@@ -135,14 +141,23 @@ contract Lender is Ownable, IERC721Receiver {
         uint256 indexed proposalId
     );
 
+    event RentalCreated(
+        address indexed owner,
+        address indexed renter,
+        uint256 indexed rentalId,
+        Rental rental
+    );
 
-    event RentalCreated();
     event RentalReturned();
     event RentalLiquidated();
 
     /* ******* */
     /* STORAGE */
     /* ******* */
+
+    uint8 public commissionRate; // percentage
+
+    uint256 public balance = 0; // personal balance of the contract (only the owned not collateral)
 
     // Accepted smart contract address for collateral purpose
     // Matic address ethereum: 0x7D1AfA7B718fb893dB30A3aBc0Cfc608AaCfeBB0
@@ -162,17 +177,26 @@ contract Lender is Ownable, IERC721Receiver {
 
     mapping (uint256 => uint256[20]) public listingIdToProposalsId; // usefull ?
 
+    uint256 public totalNumRental = 0; // used as counter
+
+    mapping(uint256 => Rental) public rentalIdToRental;
+
     /* *********** */
     /* CONSTRUCTOR */
     /* *********** */
 
-    constructor(address _erc20DenominationUsed) {
+    constructor(address _erc20DenominationUsed, uint8 _commissionRate) {
         erc20DenominationUsed = _erc20DenominationUsed;
+        commissionRate = _commissionRate;
     }
 
     /* ********* */
     /* FUNCTIONS */
     /* ********* */
+
+    function setCommissionRate(uint8 _newCommissionRate) external onlyOwner {
+        commissionRate = _newCommissionRate;
+    }
 
     function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
         return IERC721Receiver.onERC721Received.selector;
@@ -184,6 +208,10 @@ contract Lender is Ownable, IERC721Receiver {
         require(
             ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, address(this)) == true,
             "Escrow contract is not approved to transfer this nft"
+        );
+        require(
+            ERC721(_listingParameters.assetContract).ownerOf(_listingParameters.tokenId) == msg.sender,
+            "You are not the owner of the nft"
         );
         require(address(_listingParameters.erc20DenominationUsed) != address(0), "Invalid erc20 contract address");
         require(
@@ -236,6 +264,10 @@ contract Lender is Ownable, IERC721Receiver {
             "Escrow contract is not approved to transfer collateral"
         );
         require(
+            ERC20(erc20DenominationUsed).balanceOf(msg.sender) >= listingIdToListing[_listingId].collateralAmount, 
+            "Not enough token balance to cover the collateral"
+        );
+        require(
             _proposalParameters.startTimestampProposal < _proposalParameters.endTimestampProposal && 
             _proposalParameters.startTimestampRental < _proposalParameters.endTimestampRental &&
             _proposalParameters.startTimestampProposal <= _proposalParameters.startTimestampRental &&
@@ -279,10 +311,73 @@ contract Lender is Ownable, IERC721Receiver {
     }
 
     function acceptProposal(uint256 _proposalId) external onlyListingOwner(proposalIdToProposal[_proposalId].listingId) {
+        Proposal memory proposal = proposalIdToProposal[_proposalId];
+        Listing memory listing = listingIdToListing[proposal.listingId];
         // check if listing and proposal are valid
+        require(proposal.status == ProposalStatus.PENDING, "Proposal invalid");
+        require(listing.status == ListingStatus.PENDING, "Listing invalid");
         // check if timestamps are expired
+        require(listing.endTimestamp > block.timestamp, "Listing expired");
+        require(proposal.endTimestampProposal > block.timestamp && proposal.endTimestampRental > block.timestamp, "Proposal expired");
         // check if allowed to transfer nft
+        require(
+            ERC721(listing.assetContract).isApprovedForAll(msg.sender, address(this)) == true,
+            "Escrow contract is not approved to transfer this nft"
+        );
+        require(
+            ERC721(listing.assetContract).ownerOf(listing.tokenId) == msg.sender,
+            "You are not the owner of the nft"
+        );
         // check if allowed to transfer founds
-        // create rental
+         require(
+            ERC20(erc20DenominationUsed).allowance(proposal.proposalCreator, address(this)) >= listing.collateralAmount, 
+            "Escrow contract is not approved to transfer collateral"
+        );
+        require(
+            ERC20(erc20DenominationUsed).balanceOf(proposal.proposalCreator) >= listing.collateralAmount, 
+            "Not enough token balance to cover the collateral"
+        );
+        // -> create obj rental
+        rentalIdToRental[totalNumRental] = Rental(totalNumRental, msg.sender, 
+            proposal.proposalCreator, listing.assetContract, listing.tokenId, listing.collateralAmount, listing.pricePerDay,
+            proposal.startTimestampRental, proposal.endTimestampRental, proposal.isProRated, RentalStatus.ACTIVE
+        );
+        // -> moove nft to the renter
+        ERC721(listing.assetContract).safeTransferFrom(msg.sender, proposal.proposalCreator, listing.tokenId);
+        // -> moove collateral
+        bool succeed = ERC20(erc20DenominationUsed).transferFrom(proposal.proposalCreator, address(this), listing.collateralAmount);
+        require(succeed, "Failed to tranfer collateral from renter to contract");
+        // -> emit rental creation
+        emit RentalCreated(msg.sender, proposal.proposalCreator, totalNumRental, rentalIdToRental[totalNumRental]);
+        listingIdToListing[proposal.listingId].status = ListingStatus.COMPLETED;
+        proposalIdToProposal[_proposalId].status = ProposalStatus.ACCEPTED;
+        totalNumRental++;
     }
+
+    function refundRental(uint256 _rentalId) external {
+        // Do we block if this is not the original owner in the rental
+        require(
+            rentalIdToRental[_rentalId].status == RentalStatus.ACTIVE || 
+            rentalIdToRental[_rentalId].status == RentalStatus.EXPIRED, 
+            "Rental invalid"
+        );
+        require(
+            ERC721(rentalIdToRental[_rentalId].assetContract).isApprovedForAll(msg.sender, address(this)) == true,
+            "Escrow contract is not approved to transfer this nft"
+        );
+        require(
+            ERC721(rentalIdToRental[_rentalId].assetContract).ownerOf(rentalIdToRental[_rentalId].tokenId) == msg.sender,
+            "You are not the owner of the nft"
+        );
+    }
+
+    function liquidateRental(uint256 _rentalId) external {
+        // owner
+        require(rentalIdToRental[_rentalId].status == RentalStatus.EXPIRED, "Rental invalid");
+
+    }
+
+    // chainlink monitoring
+    // -> monitor timestamps of listing, proposal and rental
+    // -> monitor collateral amount during rental
 }

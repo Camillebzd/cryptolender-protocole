@@ -2,7 +2,8 @@ import { expect } from "chai";
 import { ethers } from "hardhat";
 import { Lender } from "../typechain-types";
 import {
-    loadFixture
+    loadFixture,
+    time
 } from "@nomicfoundation/hardhat-toolbox/network-helpers";
 import { EventLog } from "ethers"
 
@@ -19,16 +20,26 @@ enum ProposalStatus {
     ACCEPTED,
     REFUSED,
     CANCELLED
+};
+
+enum RentalStatus {
+    UNSET,
+    ACTIVE,
+    EXPIRED,
+    REFUND,
+    LIQUIDATED
 }
 
 describe('Lender', function () {
     async function deployFixture() {
         const [ owner, secondUser ] = await ethers.getSigners();
         const collateralAmount = 40000;
+        const commissionRate = 5;
         // Classic ERC721 contract
         const MyToken721 = await ethers.getContractFactory("MyToken721");
         const myToken721 = await MyToken721.deploy();
-        await myToken721.safeMint(owner.address, 0);
+        await myToken721.safeMint(owner.address, 0); // first token for owner
+        await myToken721.safeMint(secondUser.address, 1); // second token for secondUser
         // Classic ERC20 contract
         const MyToken20 = await ethers.getContractFactory("MyToken20");
         const myToken20 = await MyToken20.deploy();
@@ -36,7 +47,7 @@ describe('Lender', function () {
         const myToken20SecondUser = myToken20.connect(secondUser);
         // Lender contract
         const Lender = await ethers.getContractFactory("Lender");
-        const lender = await Lender.deploy(await myToken20.getAddress());
+        const lender = await Lender.deploy(await myToken20.getAddress(), commissionRate);
         const lenderSecondUser = lender.connect(secondUser);
         // first approve the nft contract
         await myToken721.setApprovalForAll(lender.getAddress(), true);
@@ -107,6 +118,13 @@ describe('Lender', function () {
         await myToken721.setApprovalForAll(lender.getAddress(), false);
 
         await expect(lender.createListing(listing)).to.be.revertedWith("Escrow contract is not approved to transfer this nft");
+    });
+
+    it("Should revert if owner doesn't own the nft", async function () {
+        const { lender, listing } = await loadFixture(deployFixture);
+
+        // use in listing the token 1 which is the token to secondUser
+        await expect(lender.createListing({...listing, tokenId: 1})).to.be.revertedWith("You are not the owner of the nft");
     });
 
     it("Should revert if assetContract is invalid", async function () {
@@ -270,6 +288,19 @@ describe('Lender', function () {
         // give not enough allowance
         await myToken20SecondUser.approve(lender.getAddress(), collateralAmount - 1);
         await expect(lenderSecondUser.createProposal(listingId, proposal)).to.be.revertedWith("Escrow contract is not approved to transfer collateral");
+    });
+
+    it("Should revert if proposal whitout approve collateral amount", async function () {
+        const { lender, lenderSecondUser, listing, proposal, myToken20SecondUser } = await loadFixture(deployFixture);
+
+        // Create listing
+        const tx = await lender.createListing(listing);
+        const eventLog = (await tx.wait())?.logs[0] as EventLog;
+        const listingId = Number(eventLog.args[2]);
+
+        // Decreases balance so don't have enough to use as collateral
+        await myToken20SecondUser.transfer(await lender.getAddress(), 20);
+        await expect(lenderSecondUser.createProposal(listingId, proposal)).to.revertedWith("Not enough token balance to cover the collateral");
     });
 
     it("Should revert if proposal on non existant listing", async function () {
@@ -448,4 +479,147 @@ describe('Lender', function () {
         await expect(lenderSecondUser.cancelProposal(propId)).to.be.revertedWith("Proposal invalid");
     });
 
+    // ---------------------------------------------------------------------------------------------------------------------------------------------
+
+    it("Should accept a proposal and create a rental object and emit it, then move nft and collateral", async function () {
+        const { lender, lenderSecondUser, listing, proposal, owner, secondUser, myToken721, myToken20SecondUser } = await loadFixture(deployFixture);
+
+        // Create listing
+        const tx = await lender.createListing(listing);
+        const eventLog = (await tx.wait())?.logs[0] as EventLog;
+        const listingId = Number(eventLog.args[2]);
+
+        // Create proposal
+        const txProp = await lenderSecondUser.createProposal(listingId, proposal);
+        const eventLogProp = (await txProp.wait())?.logs[0] as EventLog;
+        const propId = Number(eventLogProp.args[1]);
+
+        await expect(lender.acceptProposal(propId)).to.emit(lender, "RentalCreated");
+        const rental = await lender.rentalIdToRental(0) // hard coded
+        expect(rental.owner).to.equal(owner.address);
+        expect(rental.renter).to.equal(secondUser.address);
+        expect(rental.assetContract).to.equal(listing.assetContract);
+        expect(rental.tokenId).to.equal(listing.tokenId);
+        expect(rental.collateralAmount).to.equal(listing.collateralAmount);
+        expect(rental.pricePerDay).to.equal(listing.pricePerDay);
+        expect(rental.startingDate).to.equal(proposal.startTimestampRental);
+        expect(rental.endingDate).to.equal(proposal.endTimestampRental);
+        expect(rental.isProRated).to.equal(proposal.isProRated);
+        expect(rental.status).to.equal(RentalStatus.ACTIVE);
+
+        // check nft and collateral
+        expect(await myToken721.ownerOf(listing.tokenId)).to.equal(secondUser.address);
+        expect(await myToken20SecondUser.balanceOf(lender.getAddress())).to.equal(listing.collateralAmount);
+    });
+
+    it("Should revert if trying to accept 2 times the same proposal or accept 2 proposals on the same listing", async function () {
+        const { lender, lenderSecondUser, listing, proposal } = await loadFixture(deployFixture);
+
+        // Create listing
+        const tx = await lender.createListing(listing);
+        const eventLog = (await tx.wait())?.logs[0] as EventLog;
+        const listingId = Number(eventLog.args[2]);
+
+        // Create proposals
+        const txProp1 = await lenderSecondUser.createProposal(listingId, proposal);
+        const eventLogProp1 = (await txProp1.wait())?.logs[0] as EventLog;
+        const propId1 = Number(eventLogProp1.args[1]);
+
+        const txProp2 = await lenderSecondUser.createProposal(listingId, proposal);
+        const eventLogProp2 = (await txProp2.wait())?.logs[0] as EventLog;
+        const propId2 = Number(eventLogProp2.args[1]);
+
+
+        await lender.acceptProposal(propId1);
+        // try to accept 2 times the same proposal
+        await expect(lender.acceptProposal(propId1)).to.be.revertedWith("Proposal invalid");
+        // try to accept a second proposal of the same listing
+        await expect(lender.acceptProposal(propId2)).to.be.revertedWith("Listing invalid");
+    });
+
+    it("Should revert if trying to accept proposal and approves on nft or collateral are removed", async function () {
+        const { lender, lenderSecondUser, listing, proposal, myToken721, myToken20SecondUser } = await loadFixture(deployFixture);
+
+        // Create listing
+        const tx = await lender.createListing(listing);
+        const eventLog = (await tx.wait())?.logs[0] as EventLog;
+        const listingId = Number(eventLog.args[2]);
+
+        // Create proposal
+        const txProp = await lenderSecondUser.createProposal(listingId, proposal);
+        const eventLogProp = (await txProp.wait())?.logs[0] as EventLog;
+        const propId = Number(eventLogProp.args[1]);
+
+        // remove nft approve
+        await myToken721.setApprovalForAll(lender.getAddress(), false);
+        await expect(lender.acceptProposal(propId)).to.be.revertedWith("Escrow contract is not approved to transfer this nft");
+
+        await myToken721.setApprovalForAll(lender.getAddress(), true);
+        // remove collateral amount
+        await myToken20SecondUser.approve(lender.getAddress(), 0);
+        await expect(lender.acceptProposal(propId)).to.be.revertedWith("Escrow contract is not approved to transfer collateral");
+    });
+
+    it("Should revert if trying to accept proposal and timestamps are bad", async function () {
+        const { lender, lenderSecondUser, listing, proposal, myToken721, myToken20SecondUser } = await loadFixture(deployFixture);
+
+        // Create listing
+        const tx = await lender.createListing(listing);
+        const eventLog = (await tx.wait())?.logs[0] as EventLog;
+        const listingId = Number(eventLog.args[2]);
+
+        // Create proposal
+        const txProp = await lenderSecondUser.createProposal(listingId, proposal);
+        const eventLogProp = (await txProp.wait())?.logs[0] as EventLog;
+        const propId = Number(eventLogProp.args[1]);
+
+        // Listing expired
+        await time.setNextBlockTimestamp(Number(listing.endTimestamp) + 1); // increase time
+        await expect(lender.acceptProposal(propId)).to.be.revertedWith("Listing expired");
+
+        // Proposal expired
+        await lender.updateListing(listingId, {...listing, endTimestamp: Number(proposal.endTimestampRental) + 10});
+        await time.setNextBlockTimestamp(Number(proposal.endTimestampRental) + 1); // increase time
+        await expect(lender.acceptProposal(propId)).to.be.revertedWith("Proposal expired");
+        // Proposal expired 
+        await lenderSecondUser.updateProposal(propId, {...proposal, endTimestampProposal: Number(proposal.endTimestampProposal) + 10});
+        await time.setNextBlockTimestamp(Number(proposal.endTimestampRental) + 3); // increase time
+        await expect(lender.acceptProposal(propId)).to.be.revertedWith("Proposal expired");
+    });
+
+    it("Should revert if trying to accept proposal and you don't own the nft anymore", async function () {
+        const { lender, lenderSecondUser, listing, proposal, myToken721, owner, secondUser } = await loadFixture(deployFixture);
+
+        // Create listing
+        const tx = await lender.createListing(listing);
+        const eventLog = (await tx.wait())?.logs[0] as EventLog;
+        const listingId = Number(eventLog.args[2]);
+
+        // Create proposal
+        const txProp = await lenderSecondUser.createProposal(listingId, proposal);
+        const eventLogProp = (await txProp.wait())?.logs[0] as EventLog;
+        const propId = Number(eventLogProp.args[1]);
+
+        // transfer the nft so you don't own it anymore
+        await myToken721.transferFrom(owner.address, secondUser.address, 0);
+        await expect(lender.acceptProposal(propId)).to.revertedWith("You are not the owner of the nft");
+    });
+
+    it("Should revert if trying to accept proposal and renter doesn't have enough founds", async function () {
+        const { lender, lenderSecondUser, listing, proposal, myToken20SecondUser, owner, secondUser } = await loadFixture(deployFixture);
+
+        // Create listing
+        const tx = await lender.createListing(listing);
+        const eventLog = (await tx.wait())?.logs[0] as EventLog;
+        const listingId = Number(eventLog.args[2]);
+
+        // Create proposal
+        const txProp = await lenderSecondUser.createProposal(listingId, proposal);
+        const eventLogProp = (await txProp.wait())?.logs[0] as EventLog;
+        const propId = Number(eventLogProp.args[1]);
+
+        // transfer some founds so don't have enough for collateral
+        await myToken20SecondUser.transfer(await lender.getAddress(), 20);
+        await expect(lender.acceptProposal(propId)).to.revertedWith("Not enough token balance to cover the collateral");
+    });
 });
