@@ -79,14 +79,12 @@ describe('Lender', function () {
         const proposal: Lender.ProposalParametersStruct = {
             startTimestampProposal: Date.now(),
             endTimestampProposal: new Date().setDate(new Date().getDate() + 7),
-            startTimestampRental: new Date().setDate(new Date().getDate() + 2),
             endTimestampRental: new Date().setDate(new Date().getDate() + 9),
             isProRated: false
         }
         const proposalUpdating: Lender.ProposalParametersStruct = {
             startTimestampProposal: new Date().setDate(new Date().getDate() + 1),
             endTimestampProposal: new Date().setDate(new Date().getDate() + 8),
-            startTimestampRental: new Date().setDate(new Date().getDate() + 7),
             endTimestampRental: new Date().setDate(new Date().getDate() + 9),
             isProRated: true
         }
@@ -267,7 +265,6 @@ describe('Lender', function () {
         expect(proposalCreated.proposalCreator).to.equal(secondUser.address);
         expect(Number(proposalCreated.startTimestampProposal)).to.equal(Number(proposal.startTimestampProposal));
         expect(Number(proposalCreated.endTimestampProposal)).to.equal(Number(proposal.endTimestampProposal));
-        expect(Number(proposalCreated.startTimestampRental)).to.equal(Number(proposal.startTimestampRental));
         expect(Number(proposalCreated.endTimestampRental)).to.equal(Number(proposal.endTimestampRental));
         expect(proposalCreated.isProRated).to.equal(proposal.isProRated);
         expect(proposalCreated.status).to.equal(ProposalStatus.PENDING);
@@ -331,14 +328,6 @@ describe('Lender', function () {
         faillingProposal = {...proposal, startTimestampProposal: proposal.startTimestampProposal, endTimestampProposal: Number(proposal.startTimestampProposal) - 100};
         await expect(lenderSecondUser.createProposal(listingId, faillingProposal)).to.be.revertedWith("Timestamp error");
 
-        // startTimestampRental before the listing Date
-        faillingProposal = {...proposal, startTimestampRental: Number(listing.startTimestamp) - 100};
-        await expect(lenderSecondUser.createProposal(listingId, faillingProposal)).to.be.revertedWith("Timestamp error");
-
-        // endTimestampRental before startTimestampRental
-        faillingProposal = {...proposal, startTimestampRental: proposal.startTimestampRental, endTimestampRental: Number(proposal.startTimestampRental) - 100};
-        await expect(lenderSecondUser.createProposal(listingId, faillingProposal)).to.be.revertedWith("Timestamp error");
-
         // endTimestampProposal before startTimestampProposal
         faillingProposal = {...proposal, startTimestampProposal: proposal.startTimestampProposal, endTimestampProposal: Number(proposal.startTimestampProposal) - 100};
         await expect(lenderSecondUser.createProposal(listingId, faillingProposal)).to.be.revertedWith("Timestamp error");
@@ -367,7 +356,6 @@ describe('Lender', function () {
         expect(updatedProposal.proposalCreator).to.equal(secondUser.address);
         expect(Number(updatedProposal.startTimestampProposal)).to.equal(Number(proposalUpdating.startTimestampProposal));
         expect(Number(updatedProposal.endTimestampProposal)).to.equal(Number(proposalUpdating.endTimestampProposal));
-        expect(Number(updatedProposal.startTimestampRental)).to.equal(Number(proposalUpdating.startTimestampRental));
         expect(Number(updatedProposal.endTimestampRental)).to.equal(Number(proposalUpdating.endTimestampRental));
         expect(updatedProposal.isProRated).to.equal(proposalUpdating.isProRated);
         expect(updatedProposal.status).to.equal(ProposalStatus.PENDING);
@@ -409,14 +397,6 @@ describe('Lender', function () {
 
         // endTimestampProposal before startTimestampProposal
         faillingProposal = {...proposal, startTimestampProposal: proposal.startTimestampProposal, endTimestampProposal: Number(proposal.startTimestampProposal) - 100};
-        await expect(lenderSecondUser.updateProposal(propId, faillingProposal)).to.be.revertedWith("Timestamp error");
-
-        // startTimestampRental before the listing Date
-        faillingProposal = {...proposal, startTimestampRental: Number(listing.startTimestamp) - 100};
-        await expect(lenderSecondUser.updateProposal(propId, faillingProposal)).to.be.revertedWith("Timestamp error");
-
-        // endTimestampRental before startTimestampRental
-        faillingProposal = {...proposal, startTimestampRental: proposal.startTimestampRental, endTimestampRental: Number(proposal.startTimestampRental) - 100};
         await expect(lenderSecondUser.updateProposal(propId, faillingProposal)).to.be.revertedWith("Timestamp error");
 
         // endTimestampProposal before startTimestampProposal
@@ -502,7 +482,7 @@ describe('Lender', function () {
         expect(rental.tokenId).to.equal(listing.tokenId);
         expect(rental.collateralAmount).to.equal(listing.collateralAmount);
         expect(rental.pricePerDay).to.equal(listing.pricePerDay);
-        expect(rental.startingDate).to.equal(proposal.startTimestampRental);
+        expect(rental.startingDate).to.equal((new Date()).getTime());
         expect(rental.endingDate).to.equal(proposal.endTimestampRental);
         expect(rental.isProRated).to.equal(proposal.isProRated);
         expect(rental.status).to.equal(RentalStatus.ACTIVE);

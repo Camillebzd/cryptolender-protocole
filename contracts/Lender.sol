@@ -30,8 +30,8 @@ contract Lender is Ownable, IERC721Receiver {
         uint256 tokenId;
         uint256 collateralAmount;
         address erc20DenominationUsed;//unsued for the moment
-        uint128 startTimestamp;
-        uint128 endTimestamp;
+        uint256 startTimestamp;
+        uint256 endTimestamp;
         uint256 pricePerDay;
         string comment;
     }
@@ -43,8 +43,8 @@ contract Lender is Ownable, IERC721Receiver {
         uint256 tokenId;
         uint256 collateralAmount;
         address erc20DenominationUsed; //unsued for the moment
-        uint128 startTimestamp;
-        uint128 endTimestamp;
+        uint256 startTimestamp;
+        uint256 endTimestamp;
         uint256 pricePerDay;
         string comment;         // needed ?
         ListingStatus status;
@@ -53,10 +53,9 @@ contract Lender is Ownable, IERC721Receiver {
     enum ProposalStatus {UNSET, PENDING, ACCEPTED, REFUSED, CANCELLED}
 
     struct ProposalParameters {
-        uint128 startTimestampProposal;
-        uint128 endTimestampProposal;
-        uint128 startTimestampRental;
-        uint128 endTimestampRental;
+        uint256 startTimestampProposal;
+        uint256 endTimestampProposal;
+        uint256 endTimestampRental;
         bool isProRated;
     }
 
@@ -64,10 +63,9 @@ contract Lender is Ownable, IERC721Receiver {
         uint256 proposalId;
         uint256 listingId;
         address proposalCreator;
-        uint128 startTimestampProposal;
-        uint128 endTimestampProposal;
-        uint128 startTimestampRental;
-        uint128 endTimestampRental;
+        uint256 startTimestampProposal;
+        uint256 endTimestampProposal;
+        uint256 endTimestampRental;
         bool isProRated;
         ProposalStatus status;
     }
@@ -82,8 +80,8 @@ contract Lender is Ownable, IERC721Receiver {
         uint256 tokenId;
         uint256 collateralAmount;
         uint256 pricePerDay;
-        uint128 startingDate;
-        uint128 endingDate;
+        uint256 startingDate;
+        uint256 endingDate;
         bool isProRated;
         RentalStatus status;
     }
@@ -148,8 +146,24 @@ contract Lender is Ownable, IERC721Receiver {
         Rental rental
     );
 
-    event RentalReturned();
-    event RentalLiquidated();
+    event RentalRefunded(
+        address indexed owner,
+        address indexed renter,
+        uint256 indexed rentalId,
+        Rental rental
+    );
+
+    event RentalLiquidated(
+        address indexed owner,
+        address indexed renter,
+        uint256 indexed rentalId,
+        Rental rental
+    );
+
+    event BalanceWithdrawed(
+        address indexed withdrawer,
+        uint256 amount
+    );
 
     /* ******* */
     /* STORAGE */
@@ -157,7 +171,9 @@ contract Lender is Ownable, IERC721Receiver {
 
     uint8 public commissionRate; // percentage
 
-    uint256 public balance = 0; // personal balance of the contract (only the owned not collateral)
+    uint256 public personnalBalance = 0; // personal balance of the contract (only the owned not collateral)
+
+    mapping(address => uint256) public ownerBalance; // balance for all the owner of nfts using the contract
 
     // Accepted smart contract address for collateral purpose
     // Matic address ethereum: 0x7D1AfA7B718fb893dB30A3aBc0Cfc608AaCfeBB0
@@ -269,15 +285,13 @@ contract Lender is Ownable, IERC721Receiver {
         );
         require(
             _proposalParameters.startTimestampProposal < _proposalParameters.endTimestampProposal && 
-            _proposalParameters.startTimestampRental < _proposalParameters.endTimestampRental &&
-            _proposalParameters.startTimestampProposal <= _proposalParameters.startTimestampRental &&
-            listingIdToListing[_listingId].startTimestamp <= _proposalParameters.startTimestampRental &&
+            _proposalParameters.startTimestampProposal < _proposalParameters.endTimestampRental &&
             listingIdToListing[_listingId].startTimestamp <= _proposalParameters.startTimestampProposal &&
             _proposalParameters.startTimestampProposal < listingIdToListing[_listingId].endTimestamp,
             "Timestamp error"
         );
         proposalIdToProposal[totalNumProposal] = Proposal(totalNumProposal, _listingId, msg.sender, _proposalParameters.startTimestampProposal, 
-            _proposalParameters.endTimestampProposal, _proposalParameters.startTimestampRental, _proposalParameters.endTimestampRental, _proposalParameters.isProRated,
+            _proposalParameters.endTimestampProposal, _proposalParameters.endTimestampRental, _proposalParameters.isProRated,
             ProposalStatus.PENDING
         );
         emit ProposalCreated(msg.sender, totalNumProposal, _listingId, proposalIdToProposal[totalNumProposal]);
@@ -288,16 +302,13 @@ contract Lender is Ownable, IERC721Receiver {
         require(proposalIdToProposal[_proposalId].status == ProposalStatus.PENDING, "Proposal invalid");
         require(
             _proposalParameters.startTimestampProposal < _proposalParameters.endTimestampProposal && 
-            _proposalParameters.startTimestampRental < _proposalParameters.endTimestampRental &&
-            _proposalParameters.startTimestampProposal <= _proposalParameters.startTimestampRental &&
-            listingIdToListing[proposalIdToProposal[_proposalId].listingId].startTimestamp <= _proposalParameters.startTimestampRental &&
+            _proposalParameters.startTimestampProposal < _proposalParameters.endTimestampRental &&
             listingIdToListing[proposalIdToProposal[_proposalId].listingId].startTimestamp <= _proposalParameters.startTimestampProposal &&
             _proposalParameters.startTimestampProposal < listingIdToListing[proposalIdToProposal[_proposalId].listingId].endTimestamp,
             "Timestamp error"
         );
         proposalIdToProposal[_proposalId].startTimestampProposal = _proposalParameters.startTimestampProposal;
         proposalIdToProposal[_proposalId].endTimestampProposal = _proposalParameters.endTimestampProposal;
-        proposalIdToProposal[_proposalId].startTimestampRental = _proposalParameters.startTimestampRental;
         proposalIdToProposal[_proposalId].endTimestampRental = _proposalParameters.endTimestampRental;
         proposalIdToProposal[_proposalId].isProRated = _proposalParameters.isProRated;
         emit ProposalUpdated(msg.sender, _proposalId, proposalIdToProposal[_proposalId].listingId, proposalIdToProposal[_proposalId]);
@@ -340,7 +351,7 @@ contract Lender is Ownable, IERC721Receiver {
         // -> create obj rental
         rentalIdToRental[totalNumRental] = Rental(totalNumRental, msg.sender, 
             proposal.proposalCreator, listing.assetContract, listing.tokenId, listing.collateralAmount, listing.pricePerDay,
-            proposal.startTimestampRental, proposal.endTimestampRental, proposal.isProRated, RentalStatus.ACTIVE
+            block.timestamp, proposal.endTimestampRental, proposal.isProRated, RentalStatus.ACTIVE
         );
         // -> moove nft to the renter
         ERC721(listing.assetContract).safeTransferFrom(msg.sender, proposal.proposalCreator, listing.tokenId);
@@ -355,7 +366,8 @@ contract Lender is Ownable, IERC721Receiver {
     }
 
     function refundRental(uint256 _rentalId) external {
-        // Do we block if this is not the original owner in the rental
+        // For the moment we block refund if this is not the original renter
+        require(rentalIdToRental[_rentalId].renter == msg.sender, "Not allowed to renfund");
         require(
             rentalIdToRental[_rentalId].status == RentalStatus.ACTIVE || 
             rentalIdToRental[_rentalId].status == RentalStatus.EXPIRED, 
@@ -369,12 +381,46 @@ contract Lender is Ownable, IERC721Receiver {
             ERC721(rentalIdToRental[_rentalId].assetContract).ownerOf(rentalIdToRental[_rentalId].tokenId) == msg.sender,
             "You are not the owner of the nft"
         );
+        ERC721(rentalIdToRental[_rentalId].assetContract).safeTransferFrom(msg.sender, address(this), rentalIdToRental[_rentalId].tokenId);
+        uint256 priceToPay = 0;
+        if (rentalIdToRental[_rentalId].isProRated) {
+            priceToPay = rentalIdToRental[_rentalId].pricePerDay * ((block.timestamp - rentalIdToRental[_rentalId].startingDate) / 60 / 60 / 24);
+        } else {
+            priceToPay = rentalIdToRental[_rentalId].pricePerDay * ((rentalIdToRental[_rentalId].endingDate - rentalIdToRental[_rentalId].startingDate) / 60 / 60 / 24);
+        }
+        ownerBalance[rentalIdToRental[_rentalId].owner] += priceToPay;
+        // commision
+        uint256 commission = priceToPay * commissionRate / 100;
+        personnalBalance += commission;
+        bool success = ERC20(erc20DenominationUsed).transferFrom(address(this), msg.sender, rentalIdToRental[_rentalId].collateralAmount - priceToPay - commission);
+        require(success, "Transfer of collateral failed");
+        rentalIdToRental[_rentalId].status = RentalStatus.REFUND;
+        emit RentalRefunded(rentalIdToRental[_rentalId].owner, msg.sender, rentalIdToRental[_rentalId].rentalId, rentalIdToRental[_rentalId]);
     }
 
     function liquidateRental(uint256 _rentalId) external {
-        // owner
-        require(rentalIdToRental[_rentalId].status == RentalStatus.EXPIRED, "Rental invalid");
+        require(rentalIdToRental[_rentalId].owner == msg.sender, "Not allowed to liquidate");
+        require(
+            rentalIdToRental[_rentalId].status == RentalStatus.EXPIRED || 
+            block.timestamp > rentalIdToRental[_rentalId].endingDate, 
+            "Rental is not ended"
+        );
+        uint256 commission = rentalIdToRental[_rentalId].collateralAmount * commissionRate / 100;
+        personnalBalance += commission;
+        bool success = ERC20(erc20DenominationUsed).transferFrom(address(this), msg.sender, rentalIdToRental[_rentalId].collateralAmount - commission);
+        require(success, "Transfer of collateral failed");
+        rentalIdToRental[_rentalId].status = RentalStatus.LIQUIDATED;
+        emit RentalLiquidated(msg.sender, rentalIdToRental[_rentalId].renter, _rentalId, rentalIdToRental[_rentalId]);
+    }
 
+    function withdrawBalance() external {
+        require(ownerBalance[msg.sender] > 0, "Not enough found");
+        // remove balance before transfer to prevent reentrancy
+        uint256 amount = ownerBalance[msg.sender];
+        ownerBalance[msg.sender] = 0;
+        bool success = ERC20(erc20DenominationUsed).transferFrom(address(this), msg.sender, amount);
+        require(success, "Failed to tranfer founds");
+        emit BalanceWithdrawed(msg.sender, amount);
     }
 
     // chainlink monitoring
