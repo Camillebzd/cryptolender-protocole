@@ -2,7 +2,6 @@
 pragma solidity ^0.8.9;
 
 // safe imports
-import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
@@ -35,7 +34,9 @@ contract ListingManager is Ownable {
     uint256 public totalNumListing = 0; // used as counter
     mapping(uint256 => Listing) public listingIdToListing;
     mapping(address => mapping(uint256 => bool)) public isTokenListed; // first key is contract address and second is token id
-    address public proposalManagerContract; // address of escrow and rental manager contract
+    address public rentalManager;
+    address public proposalManager;
+    address public escrow; // address of escrow
 
     // events
     event ListingCreated(
@@ -61,18 +62,31 @@ contract ListingManager is Ownable {
         _;
     }
 
+    modifier onlyProtocol() {
+        require(msg.sender == proposalManager || msg.sender == rentalManager, "Only called by protocole");
+        _;
+    }
+
     // functions
     constructor() {}
 
-    function setProposalManagerContract(address _proposalManagerContract) external onlyOwner {
-        proposalManagerContract = _proposalManagerContract;
+    function setProposalManager(address _proposalManager) external onlyOwner {
+        proposalManager = _proposalManager;
+    }
+
+    function setRentalManager(address _rentalManager) external onlyOwner {
+        rentalManager = _rentalManager;
+    }
+
+    function setEscrow(address _escrow) external onlyOwner {
+        escrow = _escrow;
     }
 
     function createListing(ListingParameters memory _listingParameters) external {
         require(isTokenListed[_listingParameters.assetContract][_listingParameters.tokenId] == false, "Can not create 2 listing of same NFT");
         require(_listingParameters.assetContract != address(0), "Invalid nft contract address");
         require(
-            ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, proposalManagerContract) == true,
+            ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, escrow) == true,
             "Escrow contract is not approved to transfer this nft"
         );
         require(
@@ -97,7 +111,7 @@ contract ListingManager is Ownable {
     function updateListing(uint256 _listingId, ListingParameters memory _listingParameters) external onlyListingOwner(_listingId) {
         require(listingIdToListing[_listingId].status == ListingStatus.PENDING, "Listing is invalid");
         require(
-            ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, proposalManagerContract) == true,
+            ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, escrow) == true,
             "Escrow contract is not approved to transfer this nft"
         );
         require(
@@ -124,5 +138,9 @@ contract ListingManager is Ownable {
         listingIdToListing[_listingId].status = ListingStatus.CANCELLED;
         emit ListingCancelled(msg.sender, _listingId);
         isTokenListed[listingIdToListing[_listingId].assetContract][listingIdToListing[_listingId].tokenId] = false;
+    }
+
+    function setListingStatus(uint256 _listingId, ListingStatus _status) public onlyProtocol {
+        listingIdToListing[_listingId].status = _status;
     }
 }

@@ -2,25 +2,23 @@
 pragma solidity ^0.8.9;
 
 // safe imports
-import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 // personal import
 import "./ListingManager.sol";
+import "./RentalManager.sol";
 
 contract ProposalManager is Ownable {
     // type declarations
-    enum ProposalStatus {UNSET, PENDING, ACCEPTED, REFUSED, CANCELLED}
-
+    enum ProposalStatus {UNSET, PENDING, ACCEPTED, REFUSED, CANCELLED} // REFUSED usefull ?
     struct ProposalParameters {
         uint256 startTimestampProposal;
         uint256 endTimestampProposal;
         uint256 endTimestampRental;
         bool isProRated;
     }
-
     struct Proposal {
         uint256 proposalId;
         uint256 listingId;
@@ -35,6 +33,7 @@ contract ProposalManager is Ownable {
     // state variables
     address public listingManager;
     address public rentalManager;
+    address public escrow;
     uint256 public totalNumProposal = 0; // used as counter
     mapping(uint256 => Proposal) public proposalIdToProposal;
     address public erc20DenominationUsed; // Handle outside 
@@ -74,8 +73,16 @@ contract ProposalManager is Ownable {
         rentalManager = _rentalManager;
     }
 
+    function setEscrow(address _escrow) external onlyOwner {
+        escrow = _escrow;
+    }
+
+    function setERC20(address _erc20DenominationUsed) external onlyOwner {
+        erc20DenominationUsed = _erc20DenominationUsed;
+    }
+
+    // TODO add a limit on rental time ending -> can't last for more than 3 months ?
     function createProposal(uint256 _listingId, ProposalParameters memory _proposalParameters) external {
-        // require(isTokenListed[listingIdToListing[_listingId].assetContract][listingIdToListing[_listingId].tokenId], "Listing doesn't exist");
         (
             ,,,,
             uint256 listingCollateralAmount,
@@ -87,8 +94,8 @@ contract ProposalManager is Ownable {
         require(listingStatus == ListingManager.ListingStatus.PENDING, "Listing invalid");
         // check if allowed to move collateral
         require(
-            ERC20(erc20DenominationUsed).allowance(msg.sender, address(this)) >= listingCollateralAmount, 
-            "Contract is not approved to transfer collateral"
+            ERC20(erc20DenominationUsed).allowance(msg.sender, escrow) >= listingCollateralAmount, 
+            "Escrow contract is not approved to transfer collateral"
         );
         require(
             ERC20(erc20DenominationUsed).balanceOf(msg.sender) >= listingCollateralAmount,
@@ -122,8 +129,8 @@ contract ProposalManager is Ownable {
         require(listingStatus == ListingManager.ListingStatus.PENDING, "Listing invalid");
         // check if allowed to move collateral
         require(
-            ERC20(erc20DenominationUsed).allowance(msg.sender, address(this)) >= listingCollateralAmount, 
-            "Contract is not approved to transfer collateral"
+            ERC20(erc20DenominationUsed).allowance(msg.sender, escrow) >= listingCollateralAmount, 
+            "Escrow contract is not approved to transfer collateral"
         );
         require(
             ERC20(erc20DenominationUsed).balanceOf(msg.sender) >= listingCollateralAmount,
@@ -150,30 +157,31 @@ contract ProposalManager is Ownable {
         emit ProposalCancelled(msg.sender, _proposalId);
     }
 
-    function acceptProposal(uint256 _proposalId) external view {
+    function acceptProposal(uint256 _proposalId) external {
         Proposal memory proposal = proposalIdToProposal[_proposalId];
         (
-            ,
+            uint256 listingId,
             address listingCreator,
             address listingAssetContract,
             uint256 listingTokenId,
             uint256 listingCollateralAmount,
             ,
             uint256 listingEndTimestamp,
-            ,,
+            uint256 listingPricePerDay,
+            ,
             ListingManager.ListingStatus listingStatus
         ) = ListingManager(listingManager).listingIdToListing(proposalIdToProposal[_proposalId].listingId);
-        // check owner
-        require(listingCreator == msg.sender, "Not allowed to accept this proposal");
         // check if listing and proposal are valid
         require(proposal.status == ProposalStatus.PENDING, "Proposal invalid");
         require(listingStatus == ListingManager.ListingStatus.PENDING, "Listing invalid");
+        // check owner
+        require(listingCreator == msg.sender, "Not allowed to accept this proposal");
         // check if timestamps are expired
         require(listingEndTimestamp > block.timestamp, "Listing expired");
         require(proposal.endTimestampProposal > block.timestamp && proposal.endTimestampRental > block.timestamp, "Proposal expired");
         // check if allowed to transfer nft
         require(
-            ERC721(listingAssetContract).isApprovedForAll(msg.sender, address(this)) == true,
+            ERC721(listingAssetContract).isApprovedForAll(msg.sender, escrow) == true,
             "Escrow contract is not approved to transfer this nft"
         );
         require(
@@ -182,29 +190,32 @@ contract ProposalManager is Ownable {
         );
         // check if allowed to transfer founds
          require(
-            ERC20(erc20DenominationUsed).allowance(proposal.proposalCreator, address(this)) >= listingCollateralAmount, 
+            ERC20(erc20DenominationUsed).allowance(proposal.proposalCreator, escrow) >= listingCollateralAmount, 
             "Escrow contract is not approved to transfer collateral"
         );
         require(
             ERC20(erc20DenominationUsed).balanceOf(proposal.proposalCreator) >= listingCollateralAmount, 
             "Not enough token balance to cover the collateral"
         );
-        // -> create obj rental
-        // EXTRACT THIS CODE IN RENTAL MANAGER
-        // rentalIdToRental[totalNumRental] = Rental(totalNumRental, msg.sender, 
-        //     proposal.proposalCreator, listing.assetContract, listing.tokenId, listing.collateralAmount, listing.pricePerDay,
-        //     block.timestamp, proposal.endTimestampRental, proposal.isProRated, RentalStatus.ACTIVE
-        // );
-        // // -> moove nft to the renter
-        // ERC721(listing.assetContract).safeTransferFrom(msg.sender, proposal.proposalCreator, listing.tokenId);
-        // // -> moove collateral
-        // bool succeed = ERC20(erc20DenominationUsed).transferFrom(proposal.proposalCreator, address(this), listing.collateralAmount);
-        // require(succeed, "Failed to tranfer collateral from renter to contract");
-        // // -> emit rental creation
-        // emit RentalCreated(msg.sender, proposal.proposalCreator, totalNumRental, rentalIdToRental[totalNumRental]);
-        // listingIdToListing[proposal.listingId].status = ListingStatus.COMPLETED;
-        // proposalIdToProposal[_proposalId].status = ProposalStatus.ACCEPTED;
-        // totalNumRental++;
+        RentalManager(rentalManager).createRental(
+            RentalManager.RentalDetails(
+                listingCreator,
+                proposal.proposalCreator,
+                listingAssetContract,
+                listingTokenId,
+                listingCollateralAmount,
+                listingPricePerDay,
+                block.timestamp,
+                proposal.endTimestampRental,
+                proposal.isProRated
+            ),
+            RentalManager.RentalInfo(
+                listingId,
+                _proposalId
+            )
+        );
+        proposalIdToProposal[_proposalId].status = ProposalStatus.ACCEPTED;
+        ListingManager(listingManager).setListingStatus(listingId, ListingManager.ListingStatus.COMPLETED);
     }
 
 }

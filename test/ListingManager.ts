@@ -1,6 +1,6 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
-import { Lender, ListingManager } from "../typechain-types";
+import { ListingManager } from "../typechain-types";
 import {
     loadFixture
 } from "@nomicfoundation/hardhat-toolbox/network-helpers";
@@ -17,24 +17,23 @@ describe('ListingManager', function () {
     async function deployFixture() {
         const [ owner, firstUser, secondUser ] = await ethers.getSigners();
         const collateralAmount = 40000;
-        const commissionRate = 5;
         // Classic ERC721 contract
         const MyToken721 = await ethers.getContractFactory("MyToken721");
         const myToken721 = await MyToken721.deploy();
         await myToken721.safeMint(firstUser.address, 0); // first token for firstUser
         await myToken721.safeMint(owner.address, 1); // some token for owner
         await myToken721.safeMint(owner.address, 2); // some token for owner
-        // ProposalManager contract
-        const ProposalManager = await ethers.getContractFactory("ProposalManager");
-        const proposalManager = await ProposalManager.deploy();
+        // Escrow contract
+        const Escrow = await ethers.getContractFactory("Escrow");
+        const escrow = await Escrow.deploy();
         // ListingManager contract
         const ListingManager = await ethers.getContractFactory("ListingManager");
         const listingManager = await ListingManager.deploy();
-        await listingManager.setProposalManagerContract(await proposalManager.getAddress());
+        await listingManager.setEscrow(await escrow.getAddress());
         const listingManagerFirstUser = listingManager.connect(firstUser);
-        // first approve the proposalManager on nft contract
+        // first approve the escrow on nft contract
         const myToken721FirstUser = myToken721.connect(firstUser);
-        await myToken721FirstUser.setApprovalForAll(proposalManager.getAddress(), true);
+        await myToken721FirstUser.setApprovalForAll(escrow.getAddress(), true);
         // Usefull data
         const listing: ListingManager.ListingParametersStruct = {
             assetContract: await myToken721.getAddress(),
@@ -54,7 +53,7 @@ describe('ListingManager', function () {
             pricePerDay: 100,
             comment: "No comment but updated"
         };
-        return { firstUser, secondUser, listingManagerFirstUser, proposalManager, myToken721FirstUser, listing, listingUpdating };
+        return { firstUser, secondUser, listingManagerFirstUser, escrow, myToken721FirstUser, listing, listingUpdating };
     }
 
     it("Should create a new listing and emit the creation event", async function () {
@@ -97,10 +96,10 @@ describe('ListingManager', function () {
     });
 
     it("Should revert if owner doesn't setApprovalForAll", async function () {
-        const { listingManagerFirstUser, proposalManager, myToken721FirstUser, listing } = await loadFixture(deployFixture);
+        const { listingManagerFirstUser, escrow, myToken721FirstUser, listing } = await loadFixture(deployFixture);
 
-        // unapprove the proposal contract
-        await myToken721FirstUser.setApprovalForAll(proposalManager.getAddress(), false);
+        // unapprove the escrow contract
+        await myToken721FirstUser.setApprovalForAll(escrow.getAddress(), false);
 
         await expect(listingManagerFirstUser.createListing(listing)).to.be.revertedWith("Escrow contract is not approved to transfer this nft");
     });
@@ -113,12 +112,12 @@ describe('ListingManager', function () {
     });
 
     it("Should revert if assetContract is invalid", async function () {
-        const { listingManagerFirstUser, proposalManager, listing } = await loadFixture(deployFixture);
+        const { listingManagerFirstUser, escrow, listing } = await loadFixture(deployFixture);
 
         // use a null contract
         await expect(listingManagerFirstUser.createListing({...listing, assetContract: "0x0000000000000000000000000000000000000000"})).to.be.revertedWith("Invalid nft contract address");
         // use a no ERC721 contract but can not catch the revert for the moment
-        await expect(listingManagerFirstUser.createListing({...listing, assetContract: proposalManager.getAddress()})).to.be.reverted;
+        await expect(listingManagerFirstUser.createListing({...listing, assetContract: escrow.getAddress()})).to.be.reverted;
 
     });
 
