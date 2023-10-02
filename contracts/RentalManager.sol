@@ -12,6 +12,8 @@ import "./ListingManager.sol";
 import "./ProposalManager.sol";
 import "./Escrow.sol";
 
+import "hardhat/console.sol";
+
 contract RentalManager is Ownable {
     // type declarations
     enum RentalStatus {UNSET, ACTIVE, EXPIRED, REFUND, LIQUIDATED}
@@ -118,13 +120,17 @@ contract RentalManager is Ownable {
             "You are not the owner of the nft"
         );
         Escrow(escrow).transferToRenter(rentalIdToRental[_rentalId].details.renter, rentalIdToRental[_rentalId].details.owner, rentalIdToRental[_rentalId].details.assetContract, rentalIdToRental[_rentalId].details.tokenId);
-        uint256 priceToPay = 0;
+        uint256 timeDifference = 0;
         if (rentalIdToRental[_rentalId].details.isProRated) {
-            priceToPay = rentalIdToRental[_rentalId].details.pricePerDay * ((block.timestamp - rentalIdToRental[_rentalId].details.startingDate) / 60 / 60 / 24);
+            timeDifference = block.timestamp - rentalIdToRental[_rentalId].details.startingDate;
         } else {
             // divide by 1000 since js use millisecond and solidity use second
-            priceToPay = rentalIdToRental[_rentalId].details.pricePerDay * ((rentalIdToRental[_rentalId].details.endingDate / 1000 - rentalIdToRental[_rentalId].details.startingDate) / 60 / 60 / 24);
+            timeDifference = rentalIdToRental[_rentalId].details.endingDate / 1000 - rentalIdToRental[_rentalId].details.startingDate;
         }
+        uint256 secondsPerDay = 24 * 60 * 60;
+        // calculate the number of days (rounded up)
+        uint256 numberOfDays = (timeDifference + (secondsPerDay - 1)) / secondsPerDay;
+        uint256 priceToPay = rentalIdToRental[_rentalId].details.pricePerDay * numberOfDays;
         bool success = Escrow(escrow).payAndReturnCollateral(erc20DenominationUsed, msg.sender, rentalIdToRental[_rentalId].details.collateralAmount, rentalIdToRental[_rentalId].details.owner, priceToPay);
         require(success, "Failed to pay and return collateral");
         rentalIdToRental[_rentalId].status = RentalStatus.REFUND;
@@ -135,8 +141,8 @@ contract RentalManager is Ownable {
         require(rentalIdToRental[_rentalId].details.owner == msg.sender, "Not allowed to liquidate");
         require(
             rentalIdToRental[_rentalId].status == RentalStatus.EXPIRED || 
-            block.timestamp > rentalIdToRental[_rentalId].details.endingDate, 
-            "Rental is not ended"
+            (block.timestamp > rentalIdToRental[_rentalId].details.endingDate && rentalIdToRental[_rentalId].status == RentalStatus.ACTIVE), 
+            "Rental invalid"
         );
         bool success = Escrow(escrow).liquidateCollateral(erc20DenominationUsed, msg.sender, rentalIdToRental[_rentalId].details.collateralAmount);
         require(success, "Failed to liquidate and transfer collateral");

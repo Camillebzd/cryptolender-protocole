@@ -72,12 +72,12 @@ contract Escrow is Ownable, IERC721Receiver {
 
     function liquidateCollateral(address _erc20DenominationUsed, address _to, uint256 _amount) public onlyRentalManager returns (bool) {
         // Do we take commission on liquidation ?
-        return transferCollateralFrom(_erc20DenominationUsed, address(this), _to, _amount);
+        return ERC20(_erc20DenominationUsed).transfer(_to, _amount);
     }
 
     function retreiveNFT(address _assetContract, uint256 _tokenId) external {
         require(msg.sender == nftOwner[_assetContract][_tokenId], "Not owner of this token");
-        ERC721(_assetContract).safeTransferFrom(address(this), msg.sender, _tokenId);
+        ERC721(_assetContract).safeTransferFrom(address(this), msg.sender, _tokenId); // use tranfer or it will revert
     }
 
     function withdrawBalance(address _erc20DenominationUsed) external {
@@ -85,7 +85,7 @@ contract Escrow is Ownable, IERC721Receiver {
         // remove balance before transfer to prevent reentrancy
         uint256 amount = ownerBalance[msg.sender];
         ownerBalance[msg.sender] = 0;
-        bool success = ERC20(_erc20DenominationUsed).transferFrom(address(this), msg.sender, amount);
+        bool success = ERC20(_erc20DenominationUsed).transfer(msg.sender, amount);
         require(success, "Failed to tranfer founds");
         emit BalanceWithdrawed(msg.sender, amount);
     }

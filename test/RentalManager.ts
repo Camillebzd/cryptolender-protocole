@@ -7,6 +7,13 @@ import {
 } from "@nomicfoundation/hardhat-toolbox/network-helpers";
 import { EventLog } from "ethers"
 
+enum ListingStatus {
+    UNSET,
+    PENDING, 
+    COMPLETED, 
+    CANCELLED
+};
+
 enum ProposalStatus {
     UNSET,
     PENDING,
@@ -14,6 +21,14 @@ enum ProposalStatus {
     REFUSED,
     CANCELLED
 };
+
+enum RentalStatus {
+    UNSET,
+    ACTIVE,
+    EXPIRED,
+    REFUND,
+    LIQUIDATED
+}
 
 describe('RentalManager', function () {
     async function deployFixture() {
@@ -167,6 +182,10 @@ describe('RentalManager', function () {
         expect(newRental.details.isProRated).to.equal(proposal.isProRated);
         expect(newRental.info.listingId).to.equal(listingId);
         expect(newRental.info.proposalId).to.equal(propId);
+
+        // check listing and proposal states
+        expect((await listingManagerFirstUser.listingIdToListing(listingId)).status).to.equal(ListingStatus.COMPLETED);
+        expect((await proposalManagerFirstUser.proposalIdToProposal(propId)).status).to.equal(ProposalStatus.ACCEPTED);
     });
 
     it("Should give the nft to renter and collateral to escrow", async function () {
@@ -217,7 +236,7 @@ describe('RentalManager', function () {
         await expect(proposalManagerFirstUser.acceptProposal(propId)).to.revertedWith("Proposal invalid");
     });
 
-    it("Should revert if trying to accept a proposal without owning it", async function () {
+    it("Should revert if trying to accept a proposal without owning the listing", async function () {
         const {
             firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
             rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, 
@@ -316,20 +335,7 @@ describe('RentalManager', function () {
         await expect(proposalManagerFirstUser.acceptProposal(propId)).to.revertedWith("Not enough token balance to cover the collateral");
     });
 
-    it("Should revert if trying to accept proposal and renter doesn't have enough founds", async function () {
-        const {
-            firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
-            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, 
-            myToken20SecondUser, listing, listingUpdating, proposal, proposalUpdating, collateralAmount,
-            listingId, propId
-        } = await loadFixture(deployFixture);
-
-        // transfer some founds so secondUser doesn't have enough for collateral
-        await myToken20SecondUser.transfer(firstUser.address, 20);
-        await expect(proposalManagerFirstUser.acceptProposal(propId)).to.revertedWith("Not enough token balance to cover the collateral");
-    });
-
-    it("Should refund the NFT and retreive collateral", async function () {
+    it("Should refund the NFT, retreive collateral, owner balance increase and escrow own the nft (no pro-rated)", async function () {
         const {
             firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
             rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, myToken721SecondUser,
@@ -344,24 +350,15 @@ describe('RentalManager', function () {
         const eventLogRent = events[0];
         const rentalId = Number(eventLogRent.args[2]);
 
-        // change time and calcul price paid FOR PRO RAITED
-        // const lastBlockTimestamp = (await ethers.provider.getBlock("latest"))?.date as Date;
-        // const days = 7;
-        // let timeAddedTimestamp = new Date(lastBlockTimestamp);
-        // timeAddedTimestamp.setDate(timeAddedTimestamp.getDate() + days);
-        // time.setNextBlockTimestamp(Number(timeAddedTimestamp));
-        // const pricePaied = days * Number(listing.pricePerDay);
-        // const commission = commissionRate * pricePaied / 100;
-
         // change time and calcul price
         const lastBlockTimestamp = (await ethers.provider.getBlock("latest"))?.date as Date;
         // simulate time change in blockchain
-        const days = 7;
+        const days = 5;
         let timeAddedTimestamp = new Date(lastBlockTimestamp);
         timeAddedTimestamp.setDate(timeAddedTimestamp.getDate() + days);
-        time.setNextBlockTimestamp(Number(timeAddedTimestamp));
+        time.setNextBlockTimestamp(timeAddedTimestamp);
         // calculate days between start and end proposal non pro raited
-        const totalDays = Math.floor((Number(proposal.endTimestampRental) - Number(lastBlockTimestamp)) / (1000 * 3600 * 24));
+        const totalDays = Math.ceil((Number(proposal.endTimestampRental) - Number(lastBlockTimestamp)) / (1000 * 3600 * 24));
         const pricePaied = totalDays * Number(listing.pricePerDay);
         const commission = commissionRate * pricePaied / 100;
 
@@ -369,16 +366,159 @@ describe('RentalManager', function () {
         myToken721SecondUser.setApprovalForAll(await escrow.getAddress(), true);
 
         // return the nft and retreive collateral
-        // await escrow.test(myToken20SecondUser.getAddress(), rentalManagerFirstUser.getAddress(), secondUser.address);
         await expect(rentalManagerSecondUser.refundRental(rentalId)).to.emit(rentalManagerSecondUser, "RentalRefunded");
 
+        // user retreive collateral minus paied commission and rental
         expect(await myToken20SecondUser.balanceOf(secondUser)).to.equal(Number(listing.collateralAmount) - pricePaied - commission);
+        // escrow own the nft and owner balance increased
+        expect(await myToken721FirstUser.ownerOf(listing.tokenId)).to.equal(await escrow.getAddress());
+        expect(await escrow.ownerBalance(firstUser.address)).to.equal(pricePaied);
+        // check rental state
+        expect((await rentalManagerFirstUser.rentalIdToRental(rentalId)).status).to.equal(RentalStatus.REFUND);
     });
 
-/*    it("Should revert if refund while not be renter", async function () {
+    it("Should refund the NFT, retreive collateral, owner balance increase and escrow own the nft (pro-rated)", async function () {
         const {
             firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
-            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, 
+            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, myToken721SecondUser,
+            myToken20SecondUser, listing, listingUpdating, proposal, proposalUpdating, collateralAmount,
+            listingId, propId, commissionRate
+        } = await loadFixture(deployFixture);
+
+        // update proposal to pro rated
+        await proposalManagerSecondUser.updateProposal(propId, {...proposal, isProRated: true});
+
+        // accept proposal and create rental
+        const txRental = await proposalManagerFirstUser.acceptProposal(propId);
+        const rentalReceipt = await txRental.wait();
+        const events = await rentalManagerFirstUser.queryFilter(rentalManagerFirstUser.filters.RentalCreated, rentalReceipt?.blockNumber, rentalReceipt?.blockNumber);
+        const eventLogRent = events[0];
+        const rentalId = Number(eventLogRent.args[2]);
+
+        // change time and calcul price
+        const lastBlockTimestampStartRental = (await ethers.provider.getBlock("latest"))?.date as Date;
+        // simulate time change in blockchain
+        const days = 4;
+        let timeAddedTimestamp = new Date(lastBlockTimestampStartRental);
+        timeAddedTimestamp.setDate(timeAddedTimestamp.getDate() + days);
+        time.setNextBlockTimestamp(timeAddedTimestamp);
+
+        // approve the contract
+        myToken721SecondUser.setApprovalForAll(await escrow.getAddress(), true);
+
+        // return the nft and retreive collateral
+        await expect(rentalManagerSecondUser.refundRental(rentalId)).to.emit(rentalManagerSecondUser, "RentalRefunded");
+
+        // calculate the rest after refundRental to be sure about execution time
+        const lastBlockTimestampRefundRental = (await ethers.provider.getBlock("latest"))?.date as Date;
+        const totalDays = Math.ceil(Number(lastBlockTimestampRefundRental.getTime() - lastBlockTimestampStartRental.getTime()) / (1000 * 3600 * 24));
+        const pricePaied = totalDays * Number(listing.pricePerDay);
+        const commission = commissionRate * pricePaied / 100;
+
+        // user retreive collateral minus paied commission and rental
+        expect(await myToken20SecondUser.balanceOf(secondUser)).to.equal(Number(listing.collateralAmount) - pricePaied - commission);
+        // escrow own the nft and owner balance increased
+        expect(await myToken721FirstUser.ownerOf(listing.tokenId)).to.equal(await escrow.getAddress());
+        expect(await escrow.ownerBalance(firstUser.address)).to.equal(pricePaied);
+        // check rental state
+        expect((await rentalManagerFirstUser.rentalIdToRental(rentalId)).status).to.equal(RentalStatus.REFUND);
+    });
+
+    it("Should refund the NFT, retreive collateral, owner balance increase and escrow own the nft (no pro-rated, 30mins after)", async function () {
+        const {
+            firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
+            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, myToken721SecondUser,
+            myToken20SecondUser, listing, listingUpdating, proposal, proposalUpdating, collateralAmount,
+            listingId, propId, commissionRate
+        } = await loadFixture(deployFixture);
+
+        // accept proposal and create rental
+        const txRental = await proposalManagerFirstUser.acceptProposal(propId);
+        const rentalReceipt = await txRental.wait();
+        const events = await rentalManagerFirstUser.queryFilter(rentalManagerFirstUser.filters.RentalCreated, rentalReceipt?.blockNumber, rentalReceipt?.blockNumber);
+        const eventLogRent = events[0];
+        const rentalId = Number(eventLogRent.args[2]);
+
+        // change time and calcul price
+        const lastBlockTimestamp = (await ethers.provider.getBlock("latest"))?.date as Date;
+        // simulate time change in blockchain
+        const minutes = 30;
+        let timeAddedTimestamp = new Date(lastBlockTimestamp);
+        timeAddedTimestamp.setMinutes(timeAddedTimestamp.getMinutes() + minutes);
+        time.setNextBlockTimestamp(timeAddedTimestamp);
+        // calculate days between start and end proposal non pro raited
+        const totalDays = Math.ceil((Number(proposal.endTimestampRental) - Number(lastBlockTimestamp)) / (1000 * 3600 * 24));
+        const pricePaied = totalDays * Number(listing.pricePerDay);
+        const commission = commissionRate * pricePaied / 100;
+
+        // approve the contract
+        myToken721SecondUser.setApprovalForAll(await escrow.getAddress(), true);
+
+        // return the nft and retreive collateral
+        await expect(rentalManagerSecondUser.refundRental(rentalId)).to.emit(rentalManagerSecondUser, "RentalRefunded");
+
+        // user retreive collateral minus paied commission and rental
+        expect(await myToken20SecondUser.balanceOf(secondUser)).to.equal(Number(listing.collateralAmount) - pricePaied - commission);
+        // escrow own the nft and owner balance increased
+        expect(await myToken721FirstUser.ownerOf(listing.tokenId)).to.equal(await escrow.getAddress());
+        expect(await escrow.ownerBalance(firstUser.address)).to.equal(pricePaied);
+        // check rental state
+        expect((await rentalManagerFirstUser.rentalIdToRental(rentalId)).status).to.equal(RentalStatus.REFUND);
+    });
+
+    it("Should refund the NFT, retreive collateral, owner balance increase and escrow own the nft (pro-rated 30, min after)", async function () {
+        const {
+            firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
+            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, myToken721SecondUser,
+            myToken20SecondUser, listing, listingUpdating, proposal, proposalUpdating, collateralAmount,
+            listingId, propId, commissionRate
+        } = await loadFixture(deployFixture);
+
+        // update proposal to pro rated
+        await proposalManagerSecondUser.updateProposal(propId, {...proposal, isProRated: true});
+
+        // accept proposal and create rental
+        const txRental = await proposalManagerFirstUser.acceptProposal(propId);
+        const rentalReceipt = await txRental.wait();
+        const events = await rentalManagerFirstUser.queryFilter(rentalManagerFirstUser.filters.RentalCreated, rentalReceipt?.blockNumber, rentalReceipt?.blockNumber);
+        const eventLogRent = events[0];
+        const rentalId = Number(eventLogRent.args[2]);
+
+        // change time and calcul price
+        const lastBlockTimestampStartRental = (await ethers.provider.getBlock("latest"))?.date as Date;
+        // simulate time change in blockchain
+        const minutes = 30;
+        let timeAddedTimestamp = new Date(lastBlockTimestampStartRental);
+        timeAddedTimestamp.setMinutes(timeAddedTimestamp.getMinutes() + minutes);
+        time.setNextBlockTimestamp(timeAddedTimestamp);
+
+        // approve the contract
+        myToken721SecondUser.setApprovalForAll(await escrow.getAddress(), true);
+
+        // return the nft and retreive collateral
+        await expect(rentalManagerSecondUser.refundRental(rentalId)).to.emit(rentalManagerSecondUser, "RentalRefunded");
+
+        // calculate the rest after refundRental to be sure about execution time
+        const lastBlockTimestampRefundRental = (await ethers.provider.getBlock("latest"))?.date as Date;
+        const totalDays = Math.ceil(Number(lastBlockTimestampRefundRental.getTime() - lastBlockTimestampStartRental.getTime()) / (1000 * 3600 * 24));
+        expect(totalDays).to.equal(1); // because even if you keep it 30mins you pay at least a complet day
+        const pricePaied = totalDays * Number(listing.pricePerDay);
+        const commission = commissionRate * pricePaied / 100;
+
+        // user retreive collateral minus paied commission and rental
+        expect(await myToken20SecondUser.balanceOf(secondUser)).to.equal(Number(listing.collateralAmount) - pricePaied - commission);
+        // escrow own the nft and owner balance increased
+        expect(await myToken721FirstUser.ownerOf(listing.tokenId)).to.equal(await escrow.getAddress());
+        expect(await escrow.ownerBalance(firstUser.address)).to.equal(pricePaied);
+        // check rental state
+        expect((await rentalManagerFirstUser.rentalIdToRental(rentalId)).status).to.equal(RentalStatus.REFUND);
+    });
+
+    // is it a good behavior ? Do we want this ?
+    it("Should revert if refund while not be renter even if owning the nft", async function () {
+        const {
+            firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
+            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, myToken721SecondUser,
             myToken20SecondUser, listing, listingUpdating, proposal, proposalUpdating, collateralAmount,
             listingId, propId
         } = await loadFixture(deployFixture);
@@ -390,8 +530,12 @@ describe('RentalManager', function () {
         const eventLogRent = events[0];
         const rentalId = Number(eventLogRent.args[2]);
 
-        // return the nft and retreive collateral
-        // await rentalManagerSecondUser.refundRental(rentalId);
+        // renter send the nft to other user
+        myToken721SecondUser.transferFrom(secondUser.address, firstUser.address, listing.tokenId);
+        
+        // the other user try to refund the rental
+        await myToken721FirstUser.setApprovalForAll(await escrow.getAddress(), true);
+        await expect(rentalManagerFirstUser.refundRental(rentalId)).to.revertedWith("Not allowed to renfund");
     });
 
     it("Should revert if refund and no approve set from renter to escrow", async function () {
@@ -409,11 +553,53 @@ describe('RentalManager', function () {
         const eventLogRent = events[0];
         const rentalId = Number(eventLogRent.args[2]);
 
-        // return the nft and retreive collateral
-        // await rentalManagerSecondUser.refundRental(rentalId);
+        // refund without setApproval to escrow
+        await expect(rentalManagerSecondUser.refundRental(rentalId)).to.revertedWith("Escrow contract is not approved to transfer this nft");
     });
 
-    it("Should refund without owning the nft anymore", async function () {
+    it("Should revert if refund without owning the nft anymore", async function () {
+        const {
+            firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
+            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, myToken721SecondUser,
+            myToken20SecondUser, listing, listingUpdating, proposal, proposalUpdating, collateralAmount,
+            listingId, propId
+        } = await loadFixture(deployFixture);
+
+        // accept proposal and create rental
+        const txRental = await proposalManagerFirstUser.acceptProposal(propId);
+        const rentalReceipt = await txRental.wait();
+        const events = await rentalManagerFirstUser.queryFilter(rentalManagerFirstUser.filters.RentalCreated, rentalReceipt?.blockNumber, rentalReceipt?.blockNumber);
+        const eventLogRent = events[0];
+        const rentalId = Number(eventLogRent.args[2]);
+
+        // renter send the nft to somebody else
+        await myToken721SecondUser.transferFrom(secondUser.address, firstUser.address, listing.tokenId);
+        await myToken721SecondUser.setApprovalForAll(await escrow.getAddress(), true);
+        await expect(rentalManagerSecondUser.refundRental(rentalId)).to.revertedWith("You are not the owner of the nft");
+    });
+
+    it("Should revert if refund an invalid rental", async function () {
+        const {
+            firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
+            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, myToken721SecondUser,
+            myToken20SecondUser, listing, listingUpdating, proposal, proposalUpdating, collateralAmount,
+            listingId, propId
+        } = await loadFixture(deployFixture);
+
+        // accept proposal and create rental
+        const txRental = await proposalManagerFirstUser.acceptProposal(propId);
+        const rentalReceipt = await txRental.wait();
+        const events = await rentalManagerFirstUser.queryFilter(rentalManagerFirstUser.filters.RentalCreated, rentalReceipt?.blockNumber, rentalReceipt?.blockNumber);
+        const eventLogRent = events[0];
+        const rentalId = Number(eventLogRent.args[2]);
+        
+        // approve the contract
+        myToken721SecondUser.setApprovalForAll(await escrow.getAddress(), true);
+
+        await expect(rentalManagerSecondUser.refundRental(rentalId + 1)).to.reverted;
+    });
+
+    it("Should be able to liquidate a non refunded rental and expired", async function () {
         const {
             firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
             rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, 
@@ -428,47 +614,81 @@ describe('RentalManager', function () {
         const eventLogRent = events[0];
         const rentalId = Number(eventLogRent.args[2]);
 
+        // advance time after the end of rental
+        time.setNextBlockTimestamp(Number(proposal.endTimestampRental) + 1);
+
+        await expect(rentalManagerFirstUser.liquidateRental(rentalId)).to.emit(rentalManagerFirstUser, "RentalLiquidated");
+        // check rental state
+        expect((await rentalManagerFirstUser.rentalIdToRental(rentalId)).status).to.equal(RentalStatus.LIQUIDATED);
+        // check liquidation amount
+        expect(await myToken20SecondUser.balanceOf(firstUser.address)).to.equal(listing.collateralAmount);
+    });
+
+    it("Should revert if trying to liquidate a refunded rental", async function () {
+        const {
+            firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
+            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, myToken721SecondUser,
+            myToken20SecondUser, listing, listingUpdating, proposal, proposalUpdating, collateralAmount,
+            listingId, propId
+        } = await loadFixture(deployFixture);
+
+        // accept proposal and create rental
+        const txRental = await proposalManagerFirstUser.acceptProposal(propId);
+        const rentalReceipt = await txRental.wait();
+        const events = await rentalManagerFirstUser.queryFilter(rentalManagerFirstUser.filters.RentalCreated, rentalReceipt?.blockNumber, rentalReceipt?.blockNumber);
+        const eventLogRent = events[0];
+        const rentalId = Number(eventLogRent.args[2]);
+
+        // approve the contract
+        myToken721SecondUser.setApprovalForAll(await escrow.getAddress(), true);
+
         // return the nft and retreive collateral
-        await rentalManagerSecondUser.refundRental(rentalId);
+        await expect(rentalManagerSecondUser.refundRental(rentalId)).to.emit(rentalManagerSecondUser, "RentalRefunded");
+        
+        // advance time after the end of rental
+        time.setNextBlockTimestamp(Number(proposal.endTimestampRental) + 1);
+        await expect(rentalManagerFirstUser.liquidateRental(rentalId)).to.revertedWith("Rental invalid");
     });
 
-    it("Should refund the NFT and owner retreive it", async function () {
+    it("Should revert if trying to liquidate a non ended rental", async function () {
         const {
             firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
-            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, 
+            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, myToken721SecondUser,
             myToken20SecondUser, listing, listingUpdating, proposal, proposalUpdating, collateralAmount,
             listingId, propId
         } = await loadFixture(deployFixture);
 
+        // accept proposal and create rental
+        const txRental = await proposalManagerFirstUser.acceptProposal(propId);
+        const rentalReceipt = await txRental.wait();
+        const events = await rentalManagerFirstUser.queryFilter(rentalManagerFirstUser.filters.RentalCreated, rentalReceipt?.blockNumber, rentalReceipt?.blockNumber);
+        const eventLogRent = events[0];
+        const rentalId = Number(eventLogRent.args[2]);
+
+        // advance time just before the end of rental
+        time.setNextBlockTimestamp(Number(proposal.endTimestampRental) - 1);
+
+        await expect(rentalManagerFirstUser.liquidateRental(rentalId)).to.revertedWith("Rental invalid");
     });
 
-    it("Should revert if retreiving an empty or non owned NFT", async function () {
+    it("Should revert if trying to liquidate an expired rental but not owned", async function () {
         const {
             firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
-            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, 
+            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, myToken721SecondUser,
             myToken20SecondUser, listing, listingUpdating, proposal, proposalUpdating, collateralAmount,
             listingId, propId
         } = await loadFixture(deployFixture);
 
+        // accept proposal and create rental
+        const txRental = await proposalManagerFirstUser.acceptProposal(propId);
+        const rentalReceipt = await txRental.wait();
+        const events = await rentalManagerFirstUser.queryFilter(rentalManagerFirstUser.filters.RentalCreated, rentalReceipt?.blockNumber, rentalReceipt?.blockNumber);
+        const eventLogRent = events[0];
+        const rentalId = Number(eventLogRent.args[2]);
+
+        // advance time just before the end of rental
+        time.setNextBlockTimestamp(Number(proposal.endTimestampRental) + 1);
+
+        await expect(rentalManagerSecondUser.liquidateRental(rentalId)).to.revertedWith("Not allowed to liquidate");
     });
-
-    it("Should withdraw balance after a rent", async function () {
-        const {
-            firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
-            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, 
-            myToken20SecondUser, listing, listingUpdating, proposal, proposalUpdating, collateralAmount,
-            listingId, propId
-        } = await loadFixture(deployFixture);
-
-    });
-
-    it("Should revert if withdrawing empty balance", async function () {
-        const {
-            firstUser, secondUser, listingManagerFirstUser, proposalManagerFirstUser, proposalManagerSecondUser, 
-            rentalManagerFirstUser, rentalManagerSecondUser, escrow, myToken721FirstUser, 
-            myToken20SecondUser, listing, listingUpdating, proposal, proposalUpdating, collateralAmount,
-            listingId, propId
-        } = await loadFixture(deployFixture);
-
-    });*/
 });
