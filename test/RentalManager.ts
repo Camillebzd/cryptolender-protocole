@@ -372,7 +372,7 @@ describe('RentalManager', function () {
         expect(await myToken20SecondUser.balanceOf(secondUser)).to.equal(Number(listing.collateralAmount) - pricePaied - commission);
         // escrow own the nft and owner balance increased
         expect(await myToken721FirstUser.ownerOf(listing.tokenId)).to.equal(await escrow.getAddress());
-        expect(await escrow.ownerBalance(firstUser.address)).to.equal(pricePaied);
+        expect(await escrow.ownerBalance(firstUser.address, await myToken20SecondUser.getAddress())).to.equal(pricePaied);
         // check rental state
         expect((await rentalManagerFirstUser.rentalIdToRental(rentalId)).status).to.equal(RentalStatus.REFUND);
     });
@@ -419,7 +419,7 @@ describe('RentalManager', function () {
         expect(await myToken20SecondUser.balanceOf(secondUser)).to.equal(Number(listing.collateralAmount) - pricePaied - commission);
         // escrow own the nft and owner balance increased
         expect(await myToken721FirstUser.ownerOf(listing.tokenId)).to.equal(await escrow.getAddress());
-        expect(await escrow.ownerBalance(firstUser.address)).to.equal(pricePaied);
+        expect(await escrow.ownerBalance(firstUser.address, await myToken20SecondUser.getAddress())).to.equal(pricePaied);
         // check rental state
         expect((await rentalManagerFirstUser.rentalIdToRental(rentalId)).status).to.equal(RentalStatus.REFUND);
     });
@@ -461,7 +461,7 @@ describe('RentalManager', function () {
         expect(await myToken20SecondUser.balanceOf(secondUser)).to.equal(Number(listing.collateralAmount) - pricePaied - commission);
         // escrow own the nft and owner balance increased
         expect(await myToken721FirstUser.ownerOf(listing.tokenId)).to.equal(await escrow.getAddress());
-        expect(await escrow.ownerBalance(firstUser.address)).to.equal(pricePaied);
+        expect(await escrow.ownerBalance(firstUser.address, await myToken20SecondUser.getAddress())).to.equal(pricePaied);
         // check rental state
         expect((await rentalManagerFirstUser.rentalIdToRental(rentalId)).status).to.equal(RentalStatus.REFUND);
     });
@@ -509,7 +509,7 @@ describe('RentalManager', function () {
         expect(await myToken20SecondUser.balanceOf(secondUser)).to.equal(Number(listing.collateralAmount) - pricePaied - commission);
         // escrow own the nft and owner balance increased
         expect(await myToken721FirstUser.ownerOf(listing.tokenId)).to.equal(await escrow.getAddress());
-        expect(await escrow.ownerBalance(firstUser.address)).to.equal(pricePaied);
+        expect(await escrow.ownerBalance(firstUser.address, await myToken20SecondUser.getAddress())).to.equal(pricePaied);
         // check rental state
         expect((await rentalManagerFirstUser.rentalIdToRental(rentalId)).status).to.equal(RentalStatus.REFUND);
     });

@@ -95,8 +95,7 @@ contract RentalManager is Ownable {
     function createRental(RentalDetails memory _details, RentalInfo memory _info) external onlyProposalManager {
         rentalIdToRental[totalNumRental] = Rental(totalNumRental, _details, _info, RentalStatus.ACTIVE);
         Escrow(escrow).transferNFTFrom(_details.assetContract, _details.owner, _details.renter, _details.tokenId);
-        bool succeed = Escrow(escrow).transferCollateralFrom(erc20DenominationUsed, _details.renter, escrow, _details.collateralAmount);
-        require(succeed, "Failed to tranfer collateral from renter to escrow contract");
+        Escrow(escrow).safeTransferCollateralFrom(erc20DenominationUsed, _details.renter, escrow, _details.collateralAmount);
         emit RentalCreated(_details.owner, _details.renter, totalNumRental, rentalIdToRental[totalNumRental]);
         // listingIdToListing[proposal.listingId].status = ListingStatus.COMPLETED;
         // proposalIdToProposal[_proposalId].status = ProposalStatus.ACCEPTED;
@@ -119,7 +118,7 @@ contract RentalManager is Ownable {
             ERC721(rentalIdToRental[_rentalId].details.assetContract).ownerOf(rentalIdToRental[_rentalId].details.tokenId) == msg.sender,
             "You are not the owner of the nft"
         );
-        Escrow(escrow).transferToRenter(rentalIdToRental[_rentalId].details.renter, rentalIdToRental[_rentalId].details.owner, rentalIdToRental[_rentalId].details.assetContract, rentalIdToRental[_rentalId].details.tokenId);
+        Escrow(escrow).safeTransferToRenter(rentalIdToRental[_rentalId].details.renter, rentalIdToRental[_rentalId].details.owner, rentalIdToRental[_rentalId].details.assetContract, rentalIdToRental[_rentalId].details.tokenId);
         uint256 timeDifference = 0;
         if (rentalIdToRental[_rentalId].details.isProRated) {
             timeDifference = block.timestamp - rentalIdToRental[_rentalId].details.startingDate;
@@ -131,8 +130,7 @@ contract RentalManager is Ownable {
         // calculate the number of days (rounded up)
         uint256 numberOfDays = (timeDifference + (secondsPerDay - 1)) / secondsPerDay;
         uint256 priceToPay = rentalIdToRental[_rentalId].details.pricePerDay * numberOfDays;
-        bool success = Escrow(escrow).payAndReturnCollateral(erc20DenominationUsed, msg.sender, rentalIdToRental[_rentalId].details.collateralAmount, rentalIdToRental[_rentalId].details.owner, priceToPay);
-        require(success, "Failed to pay and return collateral");
+        Escrow(escrow).payAndReturnCollateral(erc20DenominationUsed, msg.sender, rentalIdToRental[_rentalId].details.collateralAmount, rentalIdToRental[_rentalId].details.owner, priceToPay);
         rentalIdToRental[_rentalId].status = RentalStatus.REFUND;
         emit RentalRefunded(rentalIdToRental[_rentalId].details.owner, msg.sender, rentalIdToRental[_rentalId].rentalId, rentalIdToRental[_rentalId]);
     }
