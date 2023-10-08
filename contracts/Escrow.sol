@@ -16,7 +16,7 @@ contract Escrow is Ownable, IERC721Receiver {
     using SafeERC20 for IERC20;
 
     // state variables
-    uint8 public commissionRate; // percentage
+    uint8 public commissionRate = 5; // percentage
     mapping(address => uint256) public personnalBalance; // personal balance of the protocole
     mapping(address => mapping(address => uint256)) public ownerBalance; // balance for all the owner of nfts using the protocole, first key owner, second key erc20 denomination
     mapping(address => mapping(uint256 => address)) nftOwner; // first key assetContract, second key tokenId
