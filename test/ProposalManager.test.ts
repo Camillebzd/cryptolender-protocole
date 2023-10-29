@@ -16,6 +16,8 @@ enum ProposalStatus {
     CANCELLED
 };
 
+// Only test in developmentChains env
+!developmentChains.includes(network.name) ? describe.skip :
 describe('ProposalManager', function () {
 
     describe('Setup', function () {

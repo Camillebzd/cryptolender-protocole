@@ -28,7 +28,8 @@ export async function setupUser<T extends {[contractName: string]: BaseContract}
 export enum Stage {
     Listing,
     Proposing,
-    Renting
+    Renting,
+    Retreiving
 }
 
 // Fixture for the tests of the protocole
@@ -90,13 +91,27 @@ export const setup = deployments.createFixture(async (hre, stage: Stage | undefi
         const eventLog = (await tx.wait())?.logs[0] as EventLog;
         listingId = Number(eventLog.args[2]);
     }
-    // if stage is after proposal then create a proposal
+    // if stage is after proposing then create a proposal
     let proposalId: number = -1;
     if (stage != undefined && stage > Stage.Proposing) {
         // create new proposal
         const tx = await users[lessee].ProposalManager.createProposal(listingId, proposal);
         const eventLogProp = (await tx.wait())?.logs[0] as EventLog;
         proposalId = Number(eventLogProp.args[1]);
+    }
+
+    // if stage is after renting so accept proposal then refund it
+    if (stage != undefined && stage > Stage.Renting) {
+        // accept proposal and create rental
+        const txRental = await users[lessor].ProposalManager.acceptProposal(proposalId);
+        const rentalReceipt = await txRental.wait();
+        const events = await contracts.RentalManager.queryFilter(contracts.RentalManager.filters.RentalCreated, rentalReceipt?.blockNumber, rentalReceipt?.blockNumber);
+        const eventLogRent = events[0];
+        const rentalId = Number(eventLogRent.args[2]);
+        // approve the contract
+        users[lessee].MyToken721.setApprovalForAll(await contracts.Escrow.getAddress(), true);
+        // return the nft and retreive collateral
+        await users[lessee].RentalManager.refundRental(rentalId);
     }
 
     return {

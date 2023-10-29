@@ -11,13 +11,9 @@ enum ListingStatus {
     CANCELLED
 };
 
+// Only test in developmentChains env
+!developmentChains.includes(network.name) ? describe.skip :
 describe('ListingManager', function () {
-    beforeEach(async () => {
-        if (!developmentChains.includes(network.name)) {
-            throw "You need to be on a development chain to run tests"
-        }
-    });
-
     describe('Setup', function () {
         it("Should create all the links", async function () {
             const { ListingManager, ProposalManager, RentalManager, Escrow } = await setup();

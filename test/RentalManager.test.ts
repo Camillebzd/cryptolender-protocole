@@ -1,5 +1,5 @@
 import { expect } from "chai";
-import { ethers } from "hardhat";
+import { ethers, network } from "hardhat";
 import { ListingManager, ProposalManager } from "../typechain-types";
 import {
     loadFixture,
@@ -7,6 +7,7 @@ import {
 } from "@nomicfoundation/hardhat-toolbox/network-helpers";
 import { EventLog } from "ethers"
 import { Stage, setup } from "./utils/setup";
+import { developmentChains } from "../helper-hardhat-config";
 
 enum ListingStatus {
     UNSET,
@@ -31,6 +32,8 @@ enum RentalStatus {
     LIQUIDATED
 }
 
+// Only test in developmentChains env
+!developmentChains.includes(network.name) ? describe.skip :
 describe('RentalManager', function () {
     describe('Setup', function () {
         it("Should create all the links", async function () {
