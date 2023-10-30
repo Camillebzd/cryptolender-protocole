@@ -148,6 +148,8 @@ contract RentalManager is Ownable {
         emit RentalLiquidated(msg.sender, rentalIdToRental[_rentalId].details.renter, _rentalId, rentalIdToRental[_rentalId]);
     }
 
+    // fct for the owner to retreive the tokens
+
     // chainlink monitoring
     // -> monitor timestamps of listing, proposal and rental
     // -> monitor collateral amount during rental
