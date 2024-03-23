@@ -82,6 +82,9 @@ contract ListingManager is Ownable {
         escrow = _escrow;
     }
 
+    /// @dev Create a listing on the protocol.
+    /// The NFT is not transfered in the Escrow at this steps.
+    /// @param _listingParameters all the details needed for the listing like the token id, the token address, etc.
     function createListing(ListingParameters memory _listingParameters) external {
         require(isTokenListed[_listingParameters.assetContract][_listingParameters.tokenId] == false, "Can not create 2 listing of same NFT");
         require(_listingParameters.assetContract != address(0), "Invalid nft contract address");
@@ -108,6 +111,10 @@ contract ListingManager is Ownable {
         totalNumListing++;
     }
 
+    /// @param _listingId Id of the listing
+    /// @param _listingParameters all the details needed for the listing like the token id, the token address, etc.
+    /// @dev Update the listing, you can only update the collateralAmount, start & end timestamp, pricePerDay and the comment
+    /// Note that the owner of the listing is checked with the modifier onlyListingOwner
     function updateListing(uint256 _listingId, ListingParameters memory _listingParameters) external onlyListingOwner(_listingId) {
         require(listingIdToListing[_listingId].status == ListingStatus.PENDING, "Listing is invalid");
         require(
@@ -132,6 +139,9 @@ contract ListingManager is Ownable {
         emit ListingUpdated(msg.sender, listingIdToListing[totalNumListing].assetContract, _listingId, listingIdToListing[_listingId]);
     }
 
+    /// @param _listingId Id of the listing
+    /// @dev Cancel a listing
+    /// Note that the owner of the listing is checked with the modifier onlyListingOwner
     function cancelListing(uint256 _listingId) external onlyListingOwner(_listingId) {
         require(listingIdToListing[_listingId].status == ListingStatus.PENDING, "Listing is invalid");
 
@@ -140,6 +150,9 @@ contract ListingManager is Ownable {
         isTokenListed[listingIdToListing[_listingId].assetContract][listingIdToListing[_listingId].tokenId] = false;
     }
 
+    /// @param _listingId Id of the listing
+    /// @param _status Status to set the listing to
+    /// @dev Allow the others contracts of the protocol to modify a listing 
     function setListingStatus(uint256 _listingId, ListingStatus _status) public onlyProtocol {
         listingIdToListing[_listingId].status = _status;
     }
