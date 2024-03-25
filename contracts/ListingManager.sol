@@ -7,15 +7,21 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract ListingManager is Ownable {
     // type declarations
-    enum ListingStatus {UNSET, PENDING, COMPLETED, CANCELLED}
+    enum ListingStatus { UNSET, PENDING, ACCEPTED, CANCELLED }
     struct ListingParameters {
         address assetContract;
         uint256 tokenId;
         uint256 collateralAmount;
-        uint256 startTimestamp;
-        uint256 endTimestamp;
         uint256 pricePerDay;
-        string comment;
+        uint256 startTimestamp;  // timestamp for the start of the listing
+        uint256 endTimestamp;    // timestamp for the end of the listing
+        uint256 duration;        // timestamp for the duration of the renting
+        bool isProRated;
+    }
+    struct ListingTime {
+        uint256 startTimestamp;  // timestamp for the start of the listing
+        uint256 endTimestamp;    // timestamp for the end of the listing
+        uint256 duration;        // timestamp for the duration of the renting
     }
     struct Listing {
         uint256 listingId;
@@ -23,10 +29,9 @@ contract ListingManager is Ownable {
         address assetContract;
         uint256 tokenId;
         uint256 collateralAmount;
-        uint256 startTimestamp;
-        uint256 endTimestamp;
         uint256 pricePerDay;
-        string comment;         // needed ?
+        ListingTime listingTime;
+        bool isProRated;
         ListingStatus status;
     }
 
@@ -35,7 +40,7 @@ contract ListingManager is Ownable {
     mapping(uint256 => Listing) public listingIdToListing;
     mapping(address => mapping(uint256 => bool)) public isTokenListed; // first key is contract address and second is token id
     address public rentalManager;
-    address public proposalManager;
+    // address public proposalManager;
     address public escrow; // address of escrow
 
     // events
@@ -63,16 +68,16 @@ contract ListingManager is Ownable {
     }
 
     modifier onlyProtocol() {
-        require(msg.sender == proposalManager || msg.sender == rentalManager, "Only called by protocole");
+        require(/*msg.sender == proposalManager ||*/ msg.sender == rentalManager, "Only called by protocole");
         _;
     }
 
     // functions
     constructor() {}
 
-    function setProposalManager(address _proposalManager) external onlyOwner {
-        proposalManager = _proposalManager;
-    }
+    // function setProposalManager(address _proposalManager) external onlyOwner {
+    //     proposalManager = _proposalManager;
+    // }
 
     function setRentalManager(address _rentalManager) external onlyOwner {
         rentalManager = _rentalManager;
@@ -97,14 +102,16 @@ contract ListingManager is Ownable {
             "You are not the owner of the nft"
         );
         require(
-            _listingParameters.endTimestamp > block.timestamp && _listingParameters.endTimestamp > _listingParameters.startTimestamp, 
+            _listingParameters.startTimestamp >= block.timestamp && _listingParameters.endTimestamp > _listingParameters.startTimestamp, 
             "Invalid end timestamp"
         );
         require(_listingParameters.collateralAmount > 0, "Can't accept 0 collateral");
+        require(_listingParameters.duration > 1 days, "Duration can't be less than one day");
 
         listingIdToListing[totalNumListing] = Listing(totalNumListing, msg.sender, _listingParameters.assetContract, _listingParameters.tokenId,
-            _listingParameters.collateralAmount, _listingParameters.startTimestamp, _listingParameters.endTimestamp,
-            _listingParameters.pricePerDay, _listingParameters.comment, ListingStatus.PENDING
+            _listingParameters.collateralAmount, _listingParameters.pricePerDay,
+            ListingTime(_listingParameters.startTimestamp, _listingParameters.endTimestamp, _listingParameters.duration),
+            _listingParameters.isProRated, ListingStatus.PENDING
         );
         isTokenListed[_listingParameters.assetContract][_listingParameters.tokenId] = true;
         emit ListingCreated(msg.sender, _listingParameters.assetContract, totalNumListing, listingIdToListing[totalNumListing]);
@@ -132,10 +139,11 @@ contract ListingManager is Ownable {
         require(_listingParameters.collateralAmount > 0, "Can't accept 0 collateral");
 
         listingIdToListing[_listingId].collateralAmount = _listingParameters.collateralAmount;
-        listingIdToListing[_listingId].startTimestamp = _listingParameters.startTimestamp;
-        listingIdToListing[_listingId].endTimestamp = _listingParameters.endTimestamp;
+        listingIdToListing[_listingId].listingTime.startTimestamp = _listingParameters.startTimestamp;
+        listingIdToListing[_listingId].listingTime.endTimestamp = _listingParameters.endTimestamp;
+        listingIdToListing[_listingId].listingTime.duration = _listingParameters.duration;
         listingIdToListing[_listingId].pricePerDay = _listingParameters.pricePerDay;
-        listingIdToListing[_listingId].comment = _listingParameters.comment;
+        listingIdToListing[_listingId].isProRated = _listingParameters.isProRated;
         emit ListingUpdated(msg.sender, listingIdToListing[totalNumListing].assetContract, _listingId, listingIdToListing[_listingId]);
     }
 
