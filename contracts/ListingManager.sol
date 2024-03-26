@@ -41,7 +41,7 @@ contract ListingManager is Ownable {
     mapping(address => mapping(uint256 => bool)) public isTokenListed; // first key is contract address and second is token id
     address public rentalManager;
     // address public proposalManager;
-    address public escrow; // address of escrow
+    address public vault; // address of vault
 
     // events
     event ListingCreated(
@@ -83,19 +83,19 @@ contract ListingManager is Ownable {
         rentalManager = _rentalManager;
     }
 
-    function setEscrow(address _escrow) external onlyOwner {
-        escrow = _escrow;
+    function setVault(address _vault) external onlyOwner {
+        vault = _vault;
     }
 
     /// @dev Create a listing on the protocol.
-    /// The NFT is not transfered in the Escrow at this steps.
+    /// The NFT is not transfered in the Vault at this steps.
     /// @param _listingParameters all the details needed for the listing like the token id, the token address, etc.
     function createListing(ListingParameters memory _listingParameters) external {
         require(isTokenListed[_listingParameters.assetContract][_listingParameters.tokenId] == false, "Can not create 2 listing of same NFT");
         require(_listingParameters.assetContract != address(0), "Invalid nft contract address");
         require(
-            ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, escrow) == true,
-            "Escrow contract is not approved to transfer this nft"
+            ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, vault) == true,
+            "Vault contract is not approved to transfer this nft"
         );
         require(
             ERC721(_listingParameters.assetContract).ownerOf(_listingParameters.tokenId) == msg.sender,
@@ -108,8 +108,8 @@ contract ListingManager is Ownable {
         require(_listingParameters.collateralAmount > 0, "Can't accept 0 collateral");
         require(_listingParameters.duration > 1 days, "Duration can't be less than one day");
 
-        listingIdToListing[totalNumListing] = Listing(totalNumListing, msg.sender, _listingParameters.assetContract, _listingParameters.tokenId,
-            _listingParameters.collateralAmount, _listingParameters.pricePerDay,
+        listingIdToListing[totalNumListing] = Listing(totalNumListing, msg.sender, _listingParameters.assetContract, 
+            _listingParameters.tokenId, _listingParameters.collateralAmount, _listingParameters.pricePerDay,
             ListingTime(_listingParameters.startTimestamp, _listingParameters.endTimestamp, _listingParameters.duration),
             _listingParameters.isProRated, ListingStatus.PENDING
         );
@@ -125,15 +125,15 @@ contract ListingManager is Ownable {
     function updateListing(uint256 _listingId, ListingParameters memory _listingParameters) external onlyListingOwner(_listingId) {
         require(listingIdToListing[_listingId].status == ListingStatus.PENDING, "Listing is invalid");
         require(
-            ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, escrow) == true,
-            "Escrow contract is not approved to transfer this nft"
+            ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, vault) == true,
+            "Vault contract is not approved to transfer this nft"
         );
         require(
             ERC721(_listingParameters.assetContract).ownerOf(_listingParameters.tokenId) == msg.sender,
             "You are not the owner of the nft"
         );
         require(
-            _listingParameters.endTimestamp > block.timestamp && _listingParameters.endTimestamp > _listingParameters.startTimestamp, 
+            _listingParameters.startTimestamp >= block.timestamp && _listingParameters.endTimestamp > _listingParameters.startTimestamp, 
             "Invalid end timestamp"
         );
         require(_listingParameters.collateralAmount > 0, "Can't accept 0 collateral");
