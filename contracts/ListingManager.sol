@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract ListingManager is Ownable {
     // type declarations
-    enum ListingStatus { UNSET, PENDING, ACCEPTED, CANCELLED }
+    enum ListingStatus { UNSET, AVAILABLE, RENTED, CANCELLED }
     struct ListingParameters {
         address assetContract;
         uint256 tokenId;
@@ -111,7 +111,7 @@ contract ListingManager is Ownable {
         listingIdToListing[totalNumListing] = Listing(totalNumListing, msg.sender, _listingParameters.assetContract, 
             _listingParameters.tokenId, _listingParameters.collateralAmount, _listingParameters.pricePerDay,
             ListingTime(_listingParameters.startTimestamp, _listingParameters.endTimestamp, _listingParameters.duration),
-            _listingParameters.isProRated, ListingStatus.PENDING
+            _listingParameters.isProRated, ListingStatus.AVAILABLE
         );
         isTokenListed[_listingParameters.assetContract][_listingParameters.tokenId] = true;
         emit ListingCreated(msg.sender, _listingParameters.assetContract, totalNumListing, listingIdToListing[totalNumListing]);
@@ -123,7 +123,7 @@ contract ListingManager is Ownable {
     /// @dev Update the listing, you can only update the collateralAmount, start & end timestamp, pricePerDay and the comment
     /// Note that the owner of the listing is checked with the modifier onlyListingOwner
     function updateListing(uint256 _listingId, ListingParameters memory _listingParameters) external onlyListingOwner(_listingId) {
-        require(listingIdToListing[_listingId].status == ListingStatus.PENDING, "Listing is invalid");
+        require(listingIdToListing[_listingId].status == ListingStatus.AVAILABLE, "Listing is invalid");
         require(
             ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, vault) == true,
             "Vault contract is not approved to transfer this nft"
@@ -151,7 +151,7 @@ contract ListingManager is Ownable {
     /// @dev Cancel a listing
     /// Note that the owner of the listing is checked with the modifier onlyListingOwner
     function cancelListing(uint256 _listingId) external onlyListingOwner(_listingId) {
-        require(listingIdToListing[_listingId].status == ListingStatus.PENDING, "Listing is invalid");
+        require(listingIdToListing[_listingId].status == ListingStatus.AVAILABLE, "Listing is invalid");
 
         listingIdToListing[_listingId].status = ListingStatus.CANCELLED;
         emit ListingCancelled(msg.sender, _listingId);
