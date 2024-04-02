@@ -9,33 +9,34 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 // personal import
 import "./ListingManager.sol";
-import "./ProposalManager.sol";
-import "./Escrow.sol";
+import "./Vault.sol";
+import "./libraries/PriceCalculator.sol";
 
 import "hardhat/console.sol";
 
 contract RentalManager is Ownable {
     // type declarations
-    enum RentalStatus {UNSET, ACTIVE, EXPIRED, REFUND, LIQUIDATED}
+    enum RentalStatus { UNSET, ACTIVE, EXPIRED, REFUND, LIQUIDATED }
     struct RentalDetails {
-        address owner;
-        address renter;
+        address initialOwner;   // original owner of the nft
+        address renter;         // renter of the nft
         address assetContract;
         uint256 tokenId;
         uint256 collateralAmount;
         uint256 pricePerDay;
-        uint256 startingDate;
-        uint256 endingDate;
+        uint256 startingDate;   // start of the rental
+        uint256 endingDate;     // maximum time for the end of the rental
         bool isProRated;
     }
-    struct RentalInfo {
-        uint256 listingId;
-        uint256 proposalId;
-    }
+    // struct RentalInfo {
+    //     uint256 listingId;
+    //     uint256 proposalId;
+    // }
     struct Rental {
         uint256 rentalId;
         RentalDetails details;
-        RentalInfo info;
+        uint256 listingId;
+        // RentalInfo info;
         RentalStatus status;
     }
 
@@ -45,7 +46,7 @@ contract RentalManager is Ownable {
     address public erc20DenominationUsed; // Handle outside
     address public listingManager;
     address public proposalManager;
-    address public escrow; // used only if not inherited here
+    address payable public vault; // used only if not inherited here
 
     // events
     event RentalCreated(
@@ -68,10 +69,10 @@ contract RentalManager is Ownable {
     );
 
     // functions modifiers
-    modifier onlyProposalManager() {
-        require(msg.sender == proposalManager, "Only proposalManager is allowed to call");
-        _;
-    }
+    // modifier onlyProposalManager() {
+    //     require(msg.sender == proposalManager, "Only proposalManager is allowed to call");
+    //     _;
+    // }
 
     // functions
     constructor() {}
@@ -88,67 +89,148 @@ contract RentalManager is Ownable {
         proposalManager = _proposalManager;
     }
 
-    function setEscrow(address _escrow) external onlyOwner {
-        escrow = _escrow;
+    function setVault(address _vault) external onlyOwner {
+        vault = payable(_vault);
     }
 
-    function createRental(RentalDetails memory _details, RentalInfo memory _info) external onlyProposalManager {
-        rentalIdToRental[totalNumRental] = Rental(totalNumRental, _details, _info, RentalStatus.ACTIVE);
-        Escrow(escrow).transferNFTFrom(_details.assetContract, _details.owner, _details.renter, _details.tokenId);
-        Escrow(escrow).safeTransferCollateralFrom(erc20DenominationUsed, _details.renter, escrow, _details.collateralAmount);
-        emit RentalCreated(_details.owner, _details.renter, totalNumRental, rentalIdToRental[totalNumRental]);
-        // listingIdToListing[proposal.listingId].status = ListingStatus.COMPLETED;
-        // proposalIdToProposal[_proposalId].status = ProposalStatus.ACCEPTED;
+    /// @dev calculate the price of a rent, include 0.3% fees on the rent amount
+    function findMinimumAmountNeeded(uint256 collateralAmount, uint256 pricePerDay, uint256 duration) pure internal returns(uint256) {
+    }
+
+    /// @dev Accept a listing and send native tokens to the vault and receive the NFT from user.
+    function createRental(uint256 _listingId) external payable {
+        (
+            ,
+            address listingCreator,
+            address assetContract,
+            uint256 tokenId,
+            uint256 collateralAmount,
+            uint256 pricePerDay,
+            ListingManager.ListingTime memory listingTime,
+            bool isProRated,
+            ListingManager.ListingStatus status
+        ) = ListingManager(listingManager).listingIdToListing(_listingId);
+        // Checks
+        require(status == ListingManager.ListingStatus.AVAILABLE, "Listing is invalid");
+        require(block.timestamp < listingTime.endTimestamp && block.timestamp > listingTime.startTimestamp, "Listing is invalid");
+        // Needed?
+        // require(
+        //     ERC721(assetContract).isApprovedForAll(listingCreator, vault) == true,
+        //     "Vault contract is not approved to transfer this nft"
+        // );
+        uint256 rentPrice = PriceCalculator.calculateRentPrice(
+            block.timestamp,
+            block.timestamp + listingTime.duration,
+            pricePerDay,
+            false // always set isProRated to false to force calculation for the full time
+        );
+        uint256 fees = PriceCalculator.calculateFees(rentPrice);
+        uint256 minimumAmount = collateralAmount + rentPrice + fees;
+        require(msg.value == minimumAmount, "Not the right amount of token");
+
+        // transfer tokens to vault
+        Vault(vault).storeTokens{value: msg.value}(fees);
+        // Create rental and emit event
+        rentalIdToRental[totalNumRental] = Rental(totalNumRental, 
+            RentalDetails(
+                listingCreator,
+                msg.sender,
+                assetContract,
+                tokenId,
+                collateralAmount,
+                pricePerDay,
+                block.timestamp,
+                block.timestamp + listingTime.duration,
+                isProRated
+            ), _listingId, RentalStatus.ACTIVE
+        );
+        // Set the listing as accepted
+        ListingManager(listingManager).setListingStatus(_listingId, ListingManager.ListingStatus.RENTED);
+        emit RentalCreated(listingCreator, msg.sender, totalNumRental, rentalIdToRental[totalNumRental]);
         totalNumRental++;
+        // transfer NFT to user at the end to protect again any reentrancy
+        IERC721(assetContract).safeTransferFrom(listingCreator, msg.sender, tokenId);
     }
 
+    /// @dev For the moment we block refund if this is not the original renter
+    /// The NFT is stored in the Vault because if the original user stop the
+    /// automatic send of the NFT, the renter could be blocked without any
+    /// ways to refund the rental! (Pull over push)
+    /// @param _rentalId Id of the rental
     function refundRental(uint256 _rentalId) external {
-        // For the moment we block refund if this is not the original renter
-        require(rentalIdToRental[_rentalId].details.renter == msg.sender, "Not allowed to renfund");
+        Rental storage rental = rentalIdToRental[_rentalId];
+        require(rental.details.renter == msg.sender, "Not allowed to renfund");
         require(
-            rentalIdToRental[_rentalId].status == RentalStatus.ACTIVE || 
-            rentalIdToRental[_rentalId].status == RentalStatus.EXPIRED, 
+            rental.status == RentalStatus.ACTIVE || 
+            rental.status == RentalStatus.EXPIRED, 
             "Rental invalid"
         );
         require(
-            ERC721(rentalIdToRental[_rentalId].details.assetContract).isApprovedForAll(msg.sender, escrow) == true,
-            "Escrow contract is not approved to transfer this nft"
+            ERC721(rental.details.assetContract).isApprovedForAll(msg.sender, vault) == true,
+            "Vault contract is not approved to transfer this nft"
         );
-        require(
-            ERC721(rentalIdToRental[_rentalId].details.assetContract).ownerOf(rentalIdToRental[_rentalId].details.tokenId) == msg.sender,
-            "You are not the owner of the nft"
-        );
-        Escrow(escrow).safeTransferToRenter(rentalIdToRental[_rentalId].details.renter, rentalIdToRental[_rentalId].details.owner, rentalIdToRental[_rentalId].details.assetContract, rentalIdToRental[_rentalId].details.tokenId);
-        uint256 timeDifference = 0;
-        if (rentalIdToRental[_rentalId].details.isProRated) {
-            timeDifference = block.timestamp - rentalIdToRental[_rentalId].details.startingDate;
-        } else {
-            // divide by 1000 since js use millisecond and solidity use second
-            timeDifference = rentalIdToRental[_rentalId].details.endingDate / 1000 - rentalIdToRental[_rentalId].details.startingDate;
+        // Needed?
+        // require(
+        //     ERC721(rental.details.assetContract).ownerOf(rental.details.tokenId) == msg.sender,
+        //     "You are not the owner of the nft"
+        // );
+        rental.status = RentalStatus.REFUND;
+        Vault(vault).storeNFT(rental.details.initialOwner, rental.details.renter, rental.details.assetContract, rental.details.tokenId);
+        // uint256 timeDifference = 0;
+        // if (rental.details.isProRated) {
+        //     timeDifference = block.timestamp - rental.details.startingDate;
+        // } else {
+        //     // divide by 1000 since js use millisecond and solidity use second
+        //     timeDifference = rental.details.endingDate / 1000 - rental.details.startingDate; // point of problem?
+        // }
+        // uint256 secondsPerDay = 24 * 60 * 60;
+        // // calculate the number of days (rounded up)
+        // uint256 numberOfDays = (timeDifference + (secondsPerDay - 1)) / secondsPerDay;
+        // uint256 priceToPay = rental.details.pricePerDay * numberOfDays;
+        uint256 refundIfProRated = 0;
+        if (rental.details.isProRated) {
+            uint256 priceSent = PriceCalculator.calculateRentPrice(
+                rental.details.startingDate,
+                rental.details.endingDate,
+                rental.details.pricePerDay,
+                false
+            );
+            uint256 priceProRated = PriceCalculator.calculateRentPrice(
+                rental.details.startingDate,
+                block.timestamp,
+                rental.details.pricePerDay,
+                true
+            );
+            refundIfProRated = priceSent - priceProRated;
         }
-        uint256 secondsPerDay = 24 * 60 * 60;
-        // calculate the number of days (rounded up)
-        uint256 numberOfDays = (timeDifference + (secondsPerDay - 1)) / secondsPerDay;
-        uint256 priceToPay = rentalIdToRental[_rentalId].details.pricePerDay * numberOfDays;
-        Escrow(escrow).payAndReturnCollateral(erc20DenominationUsed, msg.sender, rentalIdToRental[_rentalId].details.collateralAmount, rentalIdToRental[_rentalId].details.owner, priceToPay);
-        rentalIdToRental[_rentalId].status = RentalStatus.REFUND;
-        emit RentalRefunded(rentalIdToRental[_rentalId].details.owner, msg.sender, rentalIdToRental[_rentalId].rentalId, rentalIdToRental[_rentalId]);
+        Vault(vault).returnCollateral(rental.details.renter, rental.details.collateralAmount + refundIfProRated);
+        emit RentalRefunded(rental.details.initialOwner, msg.sender, rental.rentalId, rental);
     }
 
+    /// @dev This method can be used by the original owner if the renter didn't come back with the NFT.
+    /// @param _rentalId Id of the rental
     function liquidateRental(uint256 _rentalId) external {
-        require(rentalIdToRental[_rentalId].details.owner == msg.sender, "Not allowed to liquidate");
+        Rental storage rental = rentalIdToRental[_rentalId];
+        require(rental.details.initialOwner == msg.sender, "Not allowed to liquidate");
         require(
-            rentalIdToRental[_rentalId].status == RentalStatus.EXPIRED || 
-            (block.timestamp > rentalIdToRental[_rentalId].details.endingDate && rentalIdToRental[_rentalId].status == RentalStatus.ACTIVE), 
+            rental.status == RentalStatus.EXPIRED || 
+            (block.timestamp > rental.details.endingDate && rental.status == RentalStatus.ACTIVE), 
             "Rental invalid"
         );
-        bool success = Escrow(escrow).liquidateCollateral(erc20DenominationUsed, msg.sender, rentalIdToRental[_rentalId].details.collateralAmount);
-        require(success, "Failed to liquidate and transfer collateral");
-        rentalIdToRental[_rentalId].status = RentalStatus.LIQUIDATED;
-        emit RentalLiquidated(msg.sender, rentalIdToRental[_rentalId].details.renter, _rentalId, rentalIdToRental[_rentalId]);
+        // bool success = Vault(vault).liquidateCollateral(erc20DenominationUsed, msg.sender, rental.details.collateralAmount);
+        // require(success, "Failed to liquidate and transfer collateral");
+        uint256 rentPrice = PriceCalculator.calculateRentPrice(
+            rental.details.startingDate,
+            rental.details.endingDate,
+            rental.details.pricePerDay,
+            false
+        );
+        rental.status = RentalStatus.LIQUIDATED;
+        emit RentalLiquidated(msg.sender, rental.details.renter, _rentalId, rental);
+        Vault(vault).liquidateCollateral(msg.sender, rental.details.collateralAmount + rentPrice);
     }
 
-    // fct for the owner to retreive the tokens
+    // fct for the owner to retreive the tokens -> maybe on the Vault
 
     // chainlink monitoring
     // -> monitor timestamps of listing, proposal and rental
