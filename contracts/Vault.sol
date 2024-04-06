@@ -16,11 +16,11 @@ contract Vault is Ownable, IERC721Receiver {
     using SafeERC20 for IERC20;
 
     // state variables
-    uint8 public commissionRate = 5; // percentage
+    // uint8 public commissionRate = 5; // percentage
     // mapping(address => uint256) public personnalBalance; // personal balance of the protocole
-    uint256 protocolBalance;
-    mapping(address => mapping(address => uint256)) public ownerBalance; // balance for all the owner of nfts using the protocole, first key owner, second key erc20 denomination
-    mapping(address => mapping(uint256 => address)) nftOwner; // first key assetContract, second key tokenId
+    uint256 public protocolBalance;
+    mapping(address => uint256) public ownerBalance; // balance for all the owner of nfts using the protocole
+    mapping(address => mapping(uint256 => address)) public nftOwner; // first key assetContract, second key tokenId
     address public rentalManager;
 
     // events
@@ -50,9 +50,9 @@ contract Vault is Ownable, IERC721Receiver {
         rentalManager = _rentalManager;
     }
 
-    function setCommissionRate(uint8 _newCommissionRate) external onlyOwner {
-        commissionRate = _newCommissionRate;
-    }
+    // function setCommissionRate(uint8 _newCommissionRate) external onlyOwner {
+    //     commissionRate = _newCommissionRate;
+    // }
 
     /// @dev this method is called by the rental manager to store tokens after a user rent an NFT
     function storeTokens(uint256 _fees) external payable onlyRentalManager {
@@ -75,6 +75,30 @@ contract Vault is Ownable, IERC721Receiver {
         require(_amount < address(this).balance);
         (bool success,) = _originalOwner.call{value: _amount}("");
         require(success, "refund owner during liquidation failed");
+    }
+
+    function increaseOwnerBalance(address _originalOwner, uint256 _amount) public onlyRentalManager {
+        ownerBalance[_originalOwner] += _amount;
+    }
+
+    function withdrawProtocoleBalance(address _to) external onlyOwner {
+        require(protocolBalance > 0, "not enough tokens");
+        (bool success,) = _to.call{value: protocolBalance}("");
+        require(success, "fail to retrieve protocol balance");
+    }
+
+    function retreiveNFT(address _assetContract, uint256 _tokenId) external {
+        require(msg.sender == nftOwner[_assetContract][_tokenId], "Not owner of this token");
+        ERC721(_assetContract).safeTransferFrom(address(this), msg.sender, _tokenId);
+    }
+
+    /// @dev used by lender to retrieve tokens after rental was refunded.
+    function withdrawBalance() external {
+        uint256 balance = ownerBalance[msg.sender];
+        require(balance > 0, "not enough tokens");
+        (bool success,) = msg.sender.call{value: balance}("");
+        require(success, "refund owner during liquidation failed");
+
     }
 
     // function withdrawProtocoleBalance(address _erc20DenominationUsed) external onlyOwner {

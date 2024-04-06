@@ -37,10 +37,9 @@ contract ListingManager is Ownable {
 
     // state variables
     uint256 public totalNumListing = 0; // used as counter
-    mapping(uint256 => Listing) public listingIdToListing;
+    mapping(uint256 => Listing) public listings;
     mapping(address => mapping(uint256 => bool)) public isTokenListed; // first key is contract address and second is token id
     address public rentalManager;
-    // address public proposalManager;
     address public vault; // address of vault
 
     // events
@@ -63,21 +62,17 @@ contract ListingManager is Ownable {
 
     // functions modifiers
     modifier onlyListingOwner(uint256 listingId) {
-        require(listingIdToListing[listingId].listingCreator == msg.sender, "Error: you are not the owner of the listing");
+        require(listings[listingId].listingCreator == msg.sender, "Error: you are not the owner of the listing");
         _;
     }
 
     modifier onlyProtocol() {
-        require(/*msg.sender == proposalManager ||*/ msg.sender == rentalManager, "Only called by protocole");
+        require(msg.sender == rentalManager || msg.sender == vault, "Only called by protocole");
         _;
     }
 
     // functions
     constructor() {}
-
-    // function setProposalManager(address _proposalManager) external onlyOwner {
-    //     proposalManager = _proposalManager;
-    // }
 
     function setRentalManager(address _rentalManager) external onlyOwner {
         rentalManager = _rentalManager;
@@ -91,7 +86,7 @@ contract ListingManager is Ownable {
     /// The NFT is not transfered in the Vault at this steps.
     /// @param _listingParameters all the details needed for the listing like the token id, the token address, etc.
     function createListing(ListingParameters memory _listingParameters) external {
-        require(isTokenListed[_listingParameters.assetContract][_listingParameters.tokenId] == false, "Can not create 2 listing of same NFT");
+        require(isTokenListed[_listingParameters.assetContract][_listingParameters.tokenId] == false, "Can not create 2 listings of same NFT");
         require(_listingParameters.assetContract != address(0), "Invalid nft contract address");
         require(
             ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, vault) == true,
@@ -108,13 +103,13 @@ contract ListingManager is Ownable {
         require(_listingParameters.collateralAmount > 0, "Can't accept 0 collateral");
         require(_listingParameters.duration > 1 days, "Duration can't be less than one day");
 
-        listingIdToListing[totalNumListing] = Listing(totalNumListing, msg.sender, _listingParameters.assetContract, 
+        listings[totalNumListing] = Listing(totalNumListing, msg.sender, _listingParameters.assetContract, 
             _listingParameters.tokenId, _listingParameters.collateralAmount, _listingParameters.pricePerDay,
             ListingTime(_listingParameters.startTimestamp, _listingParameters.endTimestamp, _listingParameters.duration),
             _listingParameters.isProRated, ListingStatus.AVAILABLE
         );
         isTokenListed[_listingParameters.assetContract][_listingParameters.tokenId] = true;
-        emit ListingCreated(msg.sender, _listingParameters.assetContract, totalNumListing, listingIdToListing[totalNumListing]);
+        emit ListingCreated(msg.sender, _listingParameters.assetContract, totalNumListing, listings[totalNumListing]);
         totalNumListing++;
     }
 
@@ -123,7 +118,8 @@ contract ListingManager is Ownable {
     /// @dev Update the listing, you can only update the collateralAmount, start & end timestamp, pricePerDay and the comment
     /// Note that the owner of the listing is checked with the modifier onlyListingOwner
     function updateListing(uint256 _listingId, ListingParameters memory _listingParameters) external onlyListingOwner(_listingId) {
-        require(listingIdToListing[_listingId].status == ListingStatus.AVAILABLE, "Listing is invalid");
+        Listing storage listing = listings[_listingId];
+        require(listing.status == ListingStatus.AVAILABLE, "Listing is invalid");
         require(
             ERC721(_listingParameters.assetContract).isApprovedForAll(msg.sender, vault) == true,
             "Vault contract is not approved to transfer this nft"
@@ -137,31 +133,31 @@ contract ListingManager is Ownable {
             "Invalid end timestamp"
         );
         require(_listingParameters.collateralAmount > 0, "Can't accept 0 collateral");
-
-        listingIdToListing[_listingId].collateralAmount = _listingParameters.collateralAmount;
-        listingIdToListing[_listingId].listingTime.startTimestamp = _listingParameters.startTimestamp;
-        listingIdToListing[_listingId].listingTime.endTimestamp = _listingParameters.endTimestamp;
-        listingIdToListing[_listingId].listingTime.duration = _listingParameters.duration;
-        listingIdToListing[_listingId].pricePerDay = _listingParameters.pricePerDay;
-        listingIdToListing[_listingId].isProRated = _listingParameters.isProRated;
-        emit ListingUpdated(msg.sender, listingIdToListing[totalNumListing].assetContract, _listingId, listingIdToListing[_listingId]);
+        // let the user changes all?
+        listing.collateralAmount = _listingParameters.collateralAmount;
+        listing.listingTime.startTimestamp = _listingParameters.startTimestamp;
+        listing.listingTime.endTimestamp = _listingParameters.endTimestamp;
+        listing.listingTime.duration = _listingParameters.duration;
+        listing.pricePerDay = _listingParameters.pricePerDay;
+        listing.isProRated = _listingParameters.isProRated;
+        emit ListingUpdated(msg.sender, listings[totalNumListing].assetContract, _listingId, listings[_listingId]);
     }
 
     /// @param _listingId Id of the listing
     /// @dev Cancel a listing
     /// Note that the owner of the listing is checked with the modifier onlyListingOwner
     function cancelListing(uint256 _listingId) external onlyListingOwner(_listingId) {
-        require(listingIdToListing[_listingId].status == ListingStatus.AVAILABLE, "Listing is invalid");
+        require(listings[_listingId].status == ListingStatus.AVAILABLE, "Listing is invalid");
 
-        listingIdToListing[_listingId].status = ListingStatus.CANCELLED;
+        listings[_listingId].status = ListingStatus.CANCELLED;
         emit ListingCancelled(msg.sender, _listingId);
-        isTokenListed[listingIdToListing[_listingId].assetContract][listingIdToListing[_listingId].tokenId] = false;
+        isTokenListed[listings[_listingId].assetContract][listings[_listingId].tokenId] = false;
     }
 
     /// @param _listingId Id of the listing
     /// @param _status Status to set the listing to
     /// @dev Allow the others contracts of the protocol to modify a listing 
     function setListingStatus(uint256 _listingId, ListingStatus _status) public onlyProtocol {
-        listingIdToListing[_listingId].status = _status;
+        listings[_listingId].status = _status;
     }
 }
