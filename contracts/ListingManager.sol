@@ -13,15 +13,15 @@ contract ListingManager is Ownable {
         uint256 tokenId;
         uint256 collateralAmount;
         uint256 pricePerDay;
-        uint256 startTimestamp;  // timestamp for the start of the listing
-        uint256 endTimestamp;    // timestamp for the end of the listing
-        uint256 duration;        // timestamp for the duration of the renting TODO is it in seconds or millisecond???
+        uint256 startTimestamp;  // timestamp for the start of the listing in seconds
+        uint256 endTimestamp;    // timestamp for the end of the listing in seconds
+        uint256 duration;        // timestamp for the duration of the renting in seconds
         bool isProRated;
     }
     struct ListingTime {
-        uint256 startTimestamp;  // timestamp for the start of the listing
-        uint256 endTimestamp;    // timestamp for the end of the listing
-        uint256 duration;        // timestamp for the duration of the renting
+        uint256 startTimestamp;  // timestamp for the start of the listing in seconds
+        uint256 endTimestamp;    // timestamp for the end of the listing in seconds
+        uint256 duration;        // timestamp for the duration of the renting in seconds
     }
     struct Listing {
         uint256 listingId;

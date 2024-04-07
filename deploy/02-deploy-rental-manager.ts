@@ -20,10 +20,7 @@ const deployRentalManager: DeployFunction = async function (
     waitConfirmations: networkConfig[network.name].blockConfirmations,
   });
   log(`RentalManager deployed at ${rentalManager.address}`);
-  if (
-    !developmentChains.includes(network.name) &&
-    process.env.ETHERSCAN_API_KEY
-  ) {
+  if (!developmentChains.includes(network.name)) {
     await verify(rentalManager.address, []);
   }
 };

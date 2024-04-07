@@ -1,6 +1,6 @@
 import { BaseContract, EventLog } from "ethers";
 import { deployments, ethers, getNamedAccounts } from "hardhat";
-import { ListingManager, ProposalManager } from "../../typechain-types";
+import { ListingManager } from "../../typechain-types";
 
 export async function setupUsers<T extends {[contractName: string]: BaseContract}>(
 	addresses: string[],
@@ -25,64 +25,49 @@ export async function setupUser<T extends {[contractName: string]: BaseContract}
 	return user as T;
 }
 
+// Stages during the protocol
 export enum Stage {
     Listing,
-    Proposing,
     Renting,
     Retreiving
 }
 
-// Fixture for the tests of the protocole
+// Fixture for the tests of the protocol
 export const setup = deployments.createFixture(async (hre, stage: Stage | undefined) => {
     const { deployer, lessor, lessee } = await getNamedAccounts();
-    await deployments.fixture(['all']);
+    await deployments.fixture(['all']); // redeploy all the contracts in deploy/ folder
     const contracts = {
         ListingManager: await ethers.getContractAt("ListingManager", (await deployments.get("ListingManager")).address),
-        ProposalManager: await ethers.getContractAt("ProposalManager", (await deployments.get("ProposalManager")).address),
         RentalManager: await ethers.getContractAt("RentalManager", (await deployments.get("RentalManager")).address),
-        Escrow: await ethers.getContractAt("Escrow", (await deployments.get("Escrow")).address),
+        Vault: await ethers.getContractAt("Vault", (await deployments.get("Vault")).address),
         MyToken721: await ethers.getContractAt("MyToken721", (await deployments.get("MyToken721")).address),
-        MyToken20: await ethers.getContractAt("MyToken20", (await deployments.get("MyToken20")).address),
     }
     const users = await setupUsers([deployer, lessor, lessee], contracts); // contracts with entities connected
-    // (Step 1 of process) lessor approve the escrow on nft contract
-    await users[lessor].MyToken721.setApprovalForAll(await contracts.Escrow.getAddress(), true);
-    // (Step 3 of process) lessee approve the escrow on the crypto contract 
-    const collateralAmount = 40000;
-    await users[lessee].MyToken20.approve(await contracts.Escrow.getAddress(), collateralAmount);
+    // (Step 1 of process) lessor approve the vault on nft contract
+    await users[lessor].MyToken721.setApprovalForAll(await contracts.Vault.getAddress(), true);
     // Usefull data
-    const commissionRate = 5;
-    await users[deployer].Escrow.setCommissionRate(commissionRate);
+    const collateralAmount = ethers.parseEther("0.01");
+    // WARNING: timestamps should be in seconds because solidity work with seconds
     const listing: ListingManager.ListingParametersStruct = {
         assetContract: await contracts.MyToken721.getAddress(),
         tokenId: 0,
         collateralAmount: collateralAmount,
-        startTimestamp: Date.now(),
-        endTimestamp: new Date().setDate(new Date().getDate() + 7),
         pricePerDay: 300,
-        comment: "No comment"
+        startTimestamp: Math.floor(Date.now() / 1000), // timestamp in second
+        endTimestamp: Math.floor((new Date().setDate(new Date().getDate() + 7)) / 1000), // timestamp in second
+        duration: 7 * 60 * 60, // 7 days duration in seconds 
+        isProRated: true
     };
     const listingUpdating: ListingManager.ListingParametersStruct = {
         assetContract: await contracts.MyToken721.getAddress(),
         tokenId: 0,
         collateralAmount: collateralAmount,
-        startTimestamp: Date.now(),
-        endTimestamp: new Date().setDate(new Date().getDate() + 7),
         pricePerDay: 100,
-        comment: "No comment but updated"
-    };
-    const proposal: ProposalManager.ProposalParametersStruct = {
-        startTimestampProposal: Date.now(),
-        endTimestampProposal: new Date().setDate(new Date().getDate() + 7),
-        endTimestampRental: new Date().setDate(new Date().getDate() + 9),
-        isProRated: false
-    }
-    const proposalUpdating: ProposalManager.ProposalParametersStruct = {
-        startTimestampProposal: new Date().setDate(new Date().getDate() + 1),
-        endTimestampProposal: new Date().setDate(new Date().getDate() + 8),
-        endTimestampRental: new Date().setDate(new Date().getDate() + 9),
+        startTimestamp: Math.floor(Date.now() / 1000), // timestamp in second
+        endTimestamp: Math.floor((new Date().setDate(new Date().getDate() + 7)) / 1000), // timestamp in second
+        duration: 10 * 60 * 60, // 10 days duration in seconds 
         isProRated: true
-    }
+    };
     // if stage is after listing then create a listing
     let listingId: number = -1;
     if (stage != undefined && stage > Stage.Listing) {
@@ -91,25 +76,17 @@ export const setup = deployments.createFixture(async (hre, stage: Stage | undefi
         const eventLog = (await tx.wait())?.logs[0] as EventLog;
         listingId = Number(eventLog.args[2]);
     }
-    // if stage is after proposing then create a proposal
-    let proposalId: number = -1;
-    if (stage != undefined && stage > Stage.Proposing) {
-        // create new proposal
-        const tx = await users[lessee].ProposalManager.createProposal(listingId, proposal);
-        const eventLogProp = (await tx.wait())?.logs[0] as EventLog;
-        proposalId = Number(eventLogProp.args[1]);
-    }
 
-    // if stage is after renting so accept proposal then refund it
+    // if stage is after renting so accept listing then refund it
     if (stage != undefined && stage > Stage.Renting) {
         // accept proposal and create rental
-        const txRental = await users[lessor].ProposalManager.acceptProposal(proposalId);
+        const txRental = await users[lessor].RentalManager.createRental(listingId);
         const rentalReceipt = await txRental.wait();
         const events = await contracts.RentalManager.queryFilter(contracts.RentalManager.filters.RentalCreated, rentalReceipt?.blockNumber, rentalReceipt?.blockNumber);
         const eventLogRent = events[0];
         const rentalId = Number(eventLogRent.args[2]);
         // approve the contract
-        users[lessee].MyToken721.setApprovalForAll(await contracts.Escrow.getAddress(), true);
+        users[lessee].MyToken721.setApprovalForAll(await contracts.Vault.getAddress(), true);
         // return the nft and retreive collateral
         await users[lessee].RentalManager.refundRental(rentalId);
     }
@@ -121,12 +98,8 @@ export const setup = deployments.createFixture(async (hre, stage: Stage | undefi
         lessee,
         users,
         collateralAmount,
-        commissionRate,
         listing,
         listingUpdating,
-        proposal,
-        proposalUpdating,
         listingId,
-        proposalId
     };
 });

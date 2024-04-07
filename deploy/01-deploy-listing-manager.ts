@@ -20,10 +20,7 @@ const deployListingManager: DeployFunction = async function (
     waitConfirmations: networkConfig[network.name].blockConfirmations || 1,
   });
   log(`ListingManager deployed at ${listingManager.address}`);
-  if (
-    !developmentChains.includes(network.name) &&
-    process.env.ETHERSCAN_API_KEY
-  ) {
+  if (!developmentChains.includes(network.name)) {
     await verify(listingManager.address, []);
   }
 };

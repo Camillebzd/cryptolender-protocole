@@ -27,17 +27,17 @@ const deployMocks: DeployFunction = async function (
   await token721.safeMint(deployer, 1);
   await token721.safeMint(deployer, 2);
   // Create the ERC20 mock
-  log("Deploying ERC20 tests mock and waiting for confirmations...");
-  const myToken20 = await deploy("MyToken20", {
-    from: deployer,
-    args: [],
-    log: false,
-    waitConfirmations: networkConfig[network.name].blockConfirmations,
-  });
-  log(`MyToken20 deployed at ${myToken20.address}`);
-  // give a lot of currencies to lessee
-  const token20 = (await ethers.getContractAt("MyToken20", myToken20.address)).connect(await ethers.getSigner(deployer));
-  await token20.mint(lessee, 100000000); // be carefull this data is used in tests
+  // log("Deploying ERC20 tests mock and waiting for confirmations...");
+  // const myToken20 = await deploy("MyToken20", {
+  //   from: deployer,
+  //   args: [],
+  //   log: false,
+  //   waitConfirmations: networkConfig[network.name].blockConfirmations,
+  // });
+  // log(`MyToken20 deployed at ${myToken20.address}`);
+  // // give a lot of currencies to lessee
+  // const token20 = (await ethers.getContractAt("MyToken20", myToken20.address)).connect(await ethers.getSigner(deployer));
+  // await token20.mint(lessee, 100000000); // be carefull this data is used in tests
 };
 
 export default deployMocks;
